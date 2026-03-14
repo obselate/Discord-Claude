@@ -73,7 +73,7 @@ function getSession(channelId) {
 // Claude Agent SDK interaction
 // ---------------------------------------------------------------------------
 
-async function sendToClaud(prompt, session) {
+async function sendToClaud(prompt, session, channel) {
   const { query } = await loadSDK();
 
   const options = {
@@ -113,6 +113,15 @@ async function sendToClaud(prompt, session) {
           if (message.subtype === "init") {
             session.sessionId = message.session_id;
             console.log(`[${session.sessionId}] Session captured`);
+          }
+          // Notify Discord channel about context compaction
+          if (message.subtype === "status" && message.status === "compacting" && channel) {
+            channel.send("🔄 *Compacting context — this may take a moment…*").catch(() => {});
+            console.log(`[${session.sessionId}] Compaction started`);
+          }
+          if (message.subtype === "compact_boundary" && channel) {
+            channel.send("✅ *Context compacted — continuing with refreshed memory.*").catch(() => {});
+            console.log(`[${session.sessionId}] Compaction complete`);
           }
           break;
 
@@ -594,7 +603,7 @@ client.on(Events.MessageCreate, async (message) => {
   }, 8_000);
 
   try {
-    const response = await sendToClaud(prompt, session);
+    const response = await sendToClaud(prompt, session, message.channel);
 
     clearInterval(typingInterval);
 
