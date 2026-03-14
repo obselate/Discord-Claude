@@ -404,13 +404,29 @@ async function handleCommand(interaction) {
     }
 
     case "thread": {
+      const directory = interaction.options.getString("directory");
       const topic = interaction.options.getString("topic");
+      const description = interaction.options.getString("description");
       const now = new Date();
       const dateStr = now.toLocaleDateString("en-US", {
         month: "short",
         day: "numeric",
       });
       const threadName = topic || `Claude Thread – ${dateStr}`;
+
+      // Resolve directory: absolute paths used directly, relative resolved against WORKING_DIR
+      const resolvedPath = resolve(WORKING_DIR, directory);
+
+      // Ensure the directory exists (no-op if it already does)
+      try {
+        mkdirSync(resolvedPath, { recursive: true });
+      } catch (dirErr) {
+        await interaction.reply({
+          content: `❌ Failed to create directory \`${resolvedPath}\`: ${dirErr.message}`,
+          ephemeral: true,
+        });
+        break;
+      }
 
       try {
         // Use the configured forum channel, or fall back to current channel
@@ -423,6 +439,13 @@ async function handleCommand(interaction) {
           targetChannel = interaction.channel;
         }
 
+        // Build the starter message
+        let starterMessage = `📁 **Project:** \`${resolvedPath}\``;
+        if (description) {
+          starterMessage += `\n📝 ${description}`;
+        }
+        starterMessage += `\n\nSend a message to start chatting with Claude!`;
+
         let thread;
         console.log(`[/thread] Target channel: ${targetChannel.id}, type: ${targetChannel.type}, expected GuildForum: ${ChannelType.GuildForum}`);
         const isForum = targetChannel.type === ChannelType.GuildForum;
@@ -431,9 +454,7 @@ async function handleCommand(interaction) {
           // Create a forum post (requires a starter message)
           thread = await targetChannel.threads.create({
             name: threadName,
-            message: {
-              content: `🧵 Forum post created by ${interaction.user}. Send a message to start chatting with Claude!`,
-            },
+            message: { content: starterMessage },
             reason: `Claude forum post created by ${interaction.user.tag}`,
           });
         } else {
@@ -451,20 +472,19 @@ async function handleCommand(interaction) {
             type: ChannelType.PublicThread,
             reason: `Claude thread created by ${interaction.user.tag}`,
           });
-          await thread.send(
-            `🧵 Thread ready! Send me a message to get started.`
-          );
+          await thread.send(starterMessage);
         }
 
         // Track this thread so MessageCreate responds without @mention
         botThreads.add(thread.id);
 
-        // Initialize a fresh session for the thread
-        getSession(thread.id);
+        // Initialize a fresh session for the thread with the project directory
+        const session = getSession(thread.id);
+        session.cwd = resolvedPath;
 
         // Confirm to the user (ephemeral so it doesn't clutter the channel)
         await interaction.reply({
-          content: `Created ${isForum ? "forum post" : "thread"} **${threadName}**. Head over to ${thread} to start chatting!`,
+          content: `Created ${isForum ? "forum post" : "thread"} **${threadName}** → \`${resolvedPath}\`. Head over to ${thread} to start chatting!`,
           ephemeral: true,
         });
       } catch (err) {
