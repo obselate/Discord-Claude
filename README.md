@@ -1,75 +1,106 @@
-# Claude Code Discord Bot
+# Clod Bot
 
-Discord frontend for Claude Code via the Agent SDK. No API key — uses your Claude subscription auth. Full Claude Code capabilities: tools, MCP servers, skills, plugins, agents, the works.
+Discord bot powered by [Claude Code](https://claude.ai/code) via the Agent SDK. No API key needed — uses your Claude subscription auth. Full Claude Code capabilities: tools, MCP servers, skills, plugins, agents, session persistence.
 
-## How It Works
+## Prerequisites
 
-Each message spawns a `query()` call through the Claude Agent SDK. Session IDs are tracked per channel/thread and passed via `resume` for conversation continuity. The SDK handles all tool execution, context management, and session persistence internally.
+Before you start, make sure you have:
+
+- **Node.js 18+** — `node --version` should print `v18.x` or higher
+- **Claude Code CLI** — install at [claude.ai/code](https://claude.ai/code), then run `claude --version` to confirm it's on your PATH and authenticated
+- **A Discord bot token** — see setup steps below
 
 ## Setup
 
-### 1. Create Discord Bot
+### 1. Create a Discord Bot
 
-1. https://discord.com/developers/applications → New Application
-2. Bot tab → Reset Token → copy it
-3. Bot tab → enable **Message Content Intent**
-4. OAuth2 → URL Generator:
+1. Go to [discord.com/developers/applications](https://discord.com/developers/applications) → **New Application**
+2. **Bot** tab → **Reset Token** → copy the token
+3. **Bot** tab → **Privileged Gateway Intents** → enable **Message Content Intent**
+4. **OAuth2** → **URL Generator**:
    - Scopes: `bot`, `applications.commands`
-   - Permissions: `Send Messages`, `Read Message History`, `Attach Files`, `Use Slash Commands`, `View Channels`
-5. Copy URL → open → add to your server
+   - Bot Permissions: `Send Messages`, `Read Message History`, `Attach Files`, `Use Slash Commands`, `View Channels`
+5. Copy the generated URL → open it in your browser → add the bot to your server
 
-### 2. Install & Run
+### 2. Install and Run
 
 ```bash
+git clone <this-repo>
+cd discord-claude-bot
 npm install
 cp .env.example .env
-# Edit .env with your bot token
-node bot.js
+# Edit .env and paste your DISCORD_BOT_TOKEN
+npm run check     # verify your environment
+npm start         # launch the bot
 ```
 
-Claude Code CLI must be installed and authenticated on the host (`claude` on PATH).
+## Slash Commands
+
+| Command | Description |
+|---------|-------------|
+| `/clear` | Reset the Claude session for this channel |
+| `/session` | Show current session ID, model, and message count |
+| `/sessions` | List all active sessions across channels |
+| `/resume` | Pick an existing Claude CLI session to resume |
+| `/model <name>` | Switch model (e.g. `sonnet`, `opus`, `haiku`) |
+| `/kill_all` | Clear all active sessions |
+| `/thread` | Create a new forum post with a dedicated Claude session |
+| `/compact [instructions]` | Compact the conversation context |
+| `/memory` | List CLAUDE.md memory files in the working directory |
+| `/cost` | Show token usage and context window usage for this session |
+| `/status` | Show full session state summary |
+| `/mcp` | List connected MCP servers |
+| `/tools` | List available tools |
+| `/doctor` | Run a health check on the bot's environment |
 
 ## Usage
 
-- **@mention the bot** or **DM it** — messages go through the Agent SDK
-- Attach files — they're saved to the working directory
-- Each channel/thread = isolated session with resume
+- **@mention the bot** or **reply to one of its messages** to chat
+- **DM the bot** directly — no mention needed
+- **Attach files or images** — they're saved to the working directory and Claude can read them
+- Each channel or thread gets its own isolated Claude session with full conversation history
 
-## Discord Slash Commands
+## Configuration
 
-| Command     | Description                              |
-|-------------|------------------------------------------|
-| `/clear`    | Reset session for current channel/thread |
-| `/session`  | Show session ID, model, message count    |
-| `/sessions` | List all active sessions                 |
-| `/resume`   | Dropdown picker of existing CLI sessions |
-| `/model`    | Switch model (sonnet, opus, haiku)       |
-| `/kill_all` | Clear all sessions                       |
+Edit `.env` (copy from `.env.example`):
 
-## What You Get
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DISCORD_BOT_TOKEN` | ✅ Yes | — | From Discord Developer Portal |
+| `CLAUDE_WORKDIR` | No | `./claude-workdir` | Working directory for Claude's file operations |
+| `CLAUDE_MODEL` | No | SDK default | Model override (e.g. `claude-sonnet-4-5`) |
+| `FORUM_CHANNEL_ID` | No | — | Channel ID for `/thread` command (must be a Forum channel) |
 
-Since this runs through the Agent SDK (not raw API), you get:
+## Troubleshooting
 
-- Full tool access (Read, Write, Edit, Bash, Glob, Grep)
-- MCP server integration
-- Skills and plugins (loaded via `settingSources`)
-- Agent/subagent support
-- Session persistence and resume
-- Automatic context management and compaction
+**Slash commands not showing up in Discord**
+Global slash command registration can take up to 1 hour to propagate. This is a Discord limitation. If you need instant updates during development, switch to guild-scoped registration (see `CLAUDE.md` for details).
 
-## Config
+**Bot not responding to messages**
+Check that **Message Content Intent** is enabled in your Discord bot settings (Bot tab → Privileged Gateway Intents).
 
-Environment variables (or `.env`):
+**`claude` not found on PATH**
+Claude Code CLI must be installed and on your PATH. Run `claude --version` in your terminal to verify. If it's not found, reinstall from [claude.ai/code](https://claude.ai/code).
 
-| Variable          | Default            | Description                          |
-|-------------------|--------------------|--------------------------------------|
-| `DISCORD_BOT_TOKEN` | (required)       | Discord bot token                    |
-| `CLAUDE_WORKDIR`  | `./claude-workdir` | Working directory for Claude         |
-| `CLAUDE_MODEL`    | (SDK default)      | Default model                        |
+**Working directory permission errors**
+Check that `CLAUDE_WORKDIR` points to a directory your user can write to. The bot creates `./claude-workdir` by default.
+
+**`npm run check` fails**
+Run it and read the output — each failing check includes an explanation. Fix those issues before running `npm start`.
+
+## How It Works
+
+Each Discord channel or thread maps to a Claude Code session. Messages are sent through the Agent SDK's `query()` function, which handles tool execution, context management, and session persistence internally. Session IDs are tracked in memory and passed as `resume` on each subsequent message, giving Claude full conversation continuity.
+
+Since this uses the Agent SDK (not raw API), Claude has access to:
+- File tools: Read, Write, Edit, Bash, Glob, Grep
+- MCP servers (configured via Claude Code's settings)
+- Skills and plugins (loaded from `.claude/` directories)
+- Sub-agents and parallel execution
+- Automatic context compaction
 
 ## Notes
 
-- No `ANTHROPIC_API_KEY` needed — SDK falls back to your subscription auth
-- `permissionMode: "bypassPermissions"` is set so Claude doesn't prompt for tool approval interactively
-- `settingSources: ["project", "user"]` loads skills from both project and user `.claude/skills/`
-- Solo use. Each message blocks while Claude processes — fine for one person, not for a public bot
+- **Single-user bot** — each message blocks while Claude processes. Not designed for high-concurrency public servers.
+- **No API key needed** — the Agent SDK authenticates via your Claude subscription.
+- `permissionMode: "bypassPermissions"` is set so Claude never prompts for tool approval interactively.
