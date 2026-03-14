@@ -38,6 +38,14 @@ const DEFAULT_MODEL = process.env.CLAUDE_MODEL || ""; // blank = SDK default
 const PERMISSION_MODE = "bypassPermissions"; // headless, no interactive prompts
 const FORUM_CHANNEL_ID = process.env.FORUM_CHANNEL_ID || ""; // Forum channel for /thread posts
 
+const DISCORD_SYSTEM_PROMPT = `You are responding inside a Discord channel. Format all responses using Discord-flavored markdown:
+- Use **bold** for headers and strong emphasis — do NOT use # headings (Discord doesn't render them)
+- Use \`\`\`language fenced code blocks with language tags (e.g. \`\`\`js, \`\`\`bash)
+- Use > blockquote for callouts, warnings, and notes
+- Use - bullet lists when enumerating items rather than prose
+- Avoid HTML tags, wide markdown tables, and bare URLs without context
+- Keep responses concise where possible — long replies will be split across multiple messages`;
+
 mkdirSync(WORKING_DIR, { recursive: true });
 
 // Polls block until a human clicks "Close Poll" — override SDK's 60s timeout
@@ -175,6 +183,7 @@ async function sendToClaud(prompt, session, channel) {
 
   const options = {
     permissionMode: PERMISSION_MODE,
+    systemPrompt: DISCORD_SYSTEM_PROMPT,
     allowedTools: [
       "Read",
       "Write",
