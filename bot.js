@@ -13,6 +13,8 @@ const {
   Routes,
   Events,
   ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   StringSelectMenuBuilder,
   ChannelType,
 } = require("discord.js");
@@ -36,6 +38,9 @@ const PERMISSION_MODE = "bypassPermissions"; // headless, no interactive prompts
 const FORUM_CHANNEL_ID = process.env.FORUM_CHANNEL_ID || ""; // Forum channel for /thread posts
 
 mkdirSync(WORKING_DIR, { recursive: true });
+
+// Polls block until a human clicks "Close Poll" — override SDK's 60s timeout
+process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = "2764800000"; // 768 hours in ms
 
 // Agent SDK is ESM-only, so we load it dynamically
 let agentSDK = null;
