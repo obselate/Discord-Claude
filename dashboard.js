@@ -192,15 +192,104 @@ function truncateSection(sectionLines, maxBody, existingLines) {
 }
 
 // ---------------------------------------------------------------------------
+// Message persistence
+// ---------------------------------------------------------------------------
+
+/**
+ * Search the dashboard channel for the bot's most recent message to reuse.
+ * @returns {Promise<string|null>} message ID or null
+ */
+async function findExistingMessage() {
+  try {
+    const messages = await dashboardChannel.messages.fetch({ limit: 20 });
+    const botMsg = messages.find((m) => m.author.id === botUserId);
+    return botMsg ? botMsg.id : null;
+  } catch (err) {
+    console.error("[Dashboard] Failed to search for existing message:", err.message);
+    return null;
+  }
+}
+
+/**
+ * Send or edit the dashboard message.
+ * @param {string} content
+ */
+async function updateMessage(content) {
+  // Try to edit existing message
+  if (dashboardMessageId) {
+    try {
+      const msg = await dashboardChannel.messages.fetch(dashboardMessageId);
+      await msg.edit(content);
+      return;
+    } catch {
+      console.warn("[Dashboard] Failed to edit message, sending new one.");
+      dashboardMessageId = null;
+    }
+  }
+
+  // Send a new message
+  try {
+    const msg = await dashboardChannel.send(content);
+    dashboardMessageId = msg.id;
+  } catch (err) {
+    console.error("[Dashboard] Failed to send message:", err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
+
+/** Single poll tick: fetch, format, diff, update. */
+async function tick() {
+  const groups = await fetchBeads();
+  if (!groups) return; // bd failed, skip this tick
+
+  // Build body without timestamp for diffing
+  const body = formatBody(groups);
+
+  // Lazy: skip if bead data hasn't changed
+  if (body === cachedBody) return;
+
+  cachedBody = body;
+
+  // Build full message with fresh timestamp
+  const content = formatHeader() + body;
+  await updateMessage(content);
+}
 
 /**
  * Start the beads dashboard polling loop.
  * @param {import("discord.js").Client} client
  */
 async function startDashboard(client) {
-  // TODO: Task 5
+  if (!BEADS_CHANNEL_ID) {
+    console.log("[Dashboard] BEADS_CHANNEL_ID not set, dashboard disabled.");
+    return;
+  }
+
+  botUserId = client.user.id;
+
+  // Fetch the target channel
+  try {
+    dashboardChannel =
+      client.channels.cache.get(BEADS_CHANNEL_ID) ||
+      (await client.channels.fetch(BEADS_CHANNEL_ID));
+  } catch (err) {
+    console.warn("[Dashboard] Could not fetch channel:", err.message);
+    return;
+  }
+
+  // Look for an existing dashboard message to reuse
+  dashboardMessageId = await findExistingMessage();
+  if (dashboardMessageId) {
+    console.log(`[Dashboard] Reusing existing message: ${dashboardMessageId}`);
+  }
+
+  // Run immediately, then on interval
+  await tick();
+  intervalHandle = setInterval(tick, POLL_INTERVAL_MS);
+  console.log(`[Dashboard] Polling every ${POLL_INTERVAL_MS / 1000}s in #${dashboardChannel.name || BEADS_CHANNEL_ID}`);
 }
 
 /** Stop the polling loop. */
