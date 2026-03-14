@@ -14,6 +14,7 @@ const {
   Events,
   ActionRowBuilder,
   StringSelectMenuBuilder,
+  ChannelType,
 } = require("discord.js");
 const { resolve } = require("path");
 const { mkdirSync, writeFileSync } = require("fs");
@@ -32,6 +33,7 @@ const MAX_DISCORD_LEN = 1900;
 const WORKING_DIR = resolve(process.env.CLAUDE_WORKDIR || "./claude-workdir");
 const DEFAULT_MODEL = process.env.CLAUDE_MODEL || ""; // blank = SDK default
 const PERMISSION_MODE = "bypassPermissions"; // headless, no interactive prompts
+const FORUM_CHANNEL_ID = process.env.FORUM_CHANNEL_ID || ""; // Forum channel for /thread posts
 
 mkdirSync(WORKING_DIR, { recursive: true });
 
@@ -49,8 +51,11 @@ async function loadSDK() {
 // Session tracking
 // ---------------------------------------------------------------------------
 
-/** @type {Map<string, { sessionId: string|null, model: string, messageCount: number }>} */
+/** @type {Map<string, { sessionId: string|null, model: string, messageCount: number, cwd: string }>} */
 const sessions = new Map();
+
+/** @type {Set<string>} Track thread IDs created by the bot so we respond without @mention */
+const botThreads = new Set();
 
 function getSession(channelId) {
   if (!sessions.has(channelId)) {
@@ -58,6 +63,7 @@ function getSession(channelId) {
       sessionId: null,
       model: DEFAULT_MODEL,
       messageCount: 0,
+      cwd: WORKING_DIR,
     });
   }
   return sessions.get(channelId);
@@ -238,6 +244,19 @@ const commands = [
     name: "kill_all",
     description: "Clear all active sessions",
   },
+  {
+    name: "thread",
+    description: "Create a new thread with a fresh Claude session",
+    options: [
+      {
+        name: "topic",
+        description: "Thread name/topic (defaults to 'Claude Thread – <date>')",
+        type: 3, // STRING
+        required: false,
+        max_length: 100,
+      },
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -369,6 +388,80 @@ async function handleCommand(interaction) {
       await interaction.reply(`Cleared ${count} session(s).`);
       break;
     }
+
+    case "thread": {
+      const topic = interaction.options.getString("topic");
+      const now = new Date();
+      const dateStr = now.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      });
+      const threadName = topic || `Claude Thread – ${dateStr}`;
+
+      try {
+        // Use the configured forum channel, or fall back to current channel
+        let targetChannel;
+        if (FORUM_CHANNEL_ID) {
+          targetChannel =
+            interaction.client.channels.cache.get(FORUM_CHANNEL_ID) ||
+            (await interaction.client.channels.fetch(FORUM_CHANNEL_ID));
+        } else {
+          targetChannel = interaction.channel;
+        }
+
+        let thread;
+        console.log(`[/thread] Target channel: ${targetChannel.id}, type: ${targetChannel.type}, expected GuildForum: ${ChannelType.GuildForum}`);
+        const isForum = targetChannel.type === ChannelType.GuildForum;
+
+        if (isForum) {
+          // Create a forum post (requires a starter message)
+          thread = await targetChannel.threads.create({
+            name: threadName,
+            message: {
+              content: `🧵 Forum post created by ${interaction.user}. Send a message to start chatting with Claude!`,
+            },
+            reason: `Claude forum post created by ${interaction.user.tag}`,
+          });
+        } else {
+          // Fall back to regular thread in current channel
+          if (interaction.channel.isThread()) {
+            await interaction.reply({
+              content:
+                "❌ Cannot create a thread inside a thread. Set FORUM_CHANNEL_ID to use a forum channel.",
+              ephemeral: true,
+            });
+            break;
+          }
+          thread = await targetChannel.threads.create({
+            name: threadName,
+            type: ChannelType.PublicThread,
+            reason: `Claude thread created by ${interaction.user.tag}`,
+          });
+          await thread.send(
+            `🧵 Thread ready! Send me a message to get started.`
+          );
+        }
+
+        // Track this thread so MessageCreate responds without @mention
+        botThreads.add(thread.id);
+
+        // Initialize a fresh session for the thread
+        getSession(thread.id);
+
+        // Confirm to the user (ephemeral so it doesn't clutter the channel)
+        await interaction.reply({
+          content: `Created ${isForum ? "forum post" : "thread"} **${threadName}**. Head over to ${thread} to start chatting!`,
+          ephemeral: true,
+        });
+      } catch (err) {
+        console.error("Thread creation error:", err);
+        await interaction.reply({
+          content: `❌ Failed to create thread: ${err.message}`,
+          ephemeral: true,
+        });
+      }
+      break;
+    }
   }
 }
 
@@ -433,6 +526,7 @@ client.on(Events.MessageCreate, async (message) => {
   // Respond to @mentions, DMs, or replies to the bot's messages
   const isDM = !message.guild;
   const isMentioned = message.mentions.has(client.user);
+  const isBotThread = botThreads.has(message.channelId);
   const isReplyToBot =
     message.reference &&
     (
@@ -441,7 +535,7 @@ client.on(Events.MessageCreate, async (message) => {
         .catch(() => null)
     )?.author?.id === client.user.id;
 
-  if (!isDM && !isMentioned && !isReplyToBot) return;
+  if (!isDM && !isMentioned && !isBotThread && !isReplyToBot) return;
 
   // Strip bot mention from prompt
   let prompt = message.content
