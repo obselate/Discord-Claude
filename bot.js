@@ -89,7 +89,7 @@ async function sendToClaud(prompt, session) {
       "Skill",
       "Agent",
     ],
-    cwd: WORKING_DIR,
+    cwd: session.cwd,
     settingSources: ["project", "user"],
   };
 
