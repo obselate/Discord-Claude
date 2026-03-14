@@ -1,0 +1,14 @@
+{
+  "name": "discord-claude-bot",
+  "version": "1.0.0",
+  "description": "Discord frontend for headless Claude Code via Agent SDK",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "node --watch bot.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "latest",
+    "discord.js": "^14.16.0",
+    "dotenv": "^16.4.0"
+  }
+}
