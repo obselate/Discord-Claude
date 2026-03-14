@@ -58,7 +58,7 @@ async function loadSDK() {
 // Session tracking
 // ---------------------------------------------------------------------------
 
-/** @type {Map<string, { sessionId: string|null, model: string, messageCount: number, cwd: string }>} */
+/** @type {Map<string, { sessionId: string|null, model: string, messageCount: number, cwd: string, inputTokens: number, outputTokens: number }>} */
 const sessions = new Map();
 
 /** @type {Set<string>} Track thread IDs created by the bot so we respond without @mention */
@@ -71,6 +71,8 @@ function getSession(channelId) {
       model: DEFAULT_MODEL,
       messageCount: 0,
       cwd: WORKING_DIR,
+      inputTokens: 0,
+      outputTokens: 0,
     });
   }
   return sessions.get(channelId);
@@ -248,6 +250,11 @@ async function sendToClaud(prompt, session, channel) {
           // Capture session ID from result too
           if (message.session_id) {
             session.sessionId = message.session_id;
+          }
+          // Accumulate token usage for /cost and /status
+          if (message.usage) {
+            session.inputTokens += message.usage.input_tokens || 0;
+            session.outputTokens += message.usage.output_tokens || 0;
           }
           break;
 
