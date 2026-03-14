@@ -84,6 +84,81 @@ const pollContext = { channel: null };
 /** @type {Map<string, { resolve: Function, timeout: NodeJS.Timeout, closed: boolean }>} */
 const pendingPolls = new Map();
 
+/**
+ * Resolves a pending poll by collecting results and cleaning up.
+ * Idempotent — returns false if already closed.
+ * @param {string} messageId - The poll message ID
+ * @param {import("discord.js").Message} pollMessage - The poll message object
+ * @returns {Promise<boolean>} true if resolved, false if already closed
+ */
+async function resolvePoll(messageId, pollMessage) {
+  const entry = pendingPolls.get(messageId);
+  if (!entry || entry.closed) return false;
+
+  entry.closed = true;
+  clearTimeout(entry.timeout);
+
+  // End the poll (may already be expired)
+  try {
+    await pollMessage.poll.end();
+  } catch {
+    // PollAlreadyExpired — that's fine
+  }
+
+  // Re-fetch to get finalized vote counts
+  let updatedMessage;
+  try {
+    updatedMessage = await pollMessage.channel.messages.fetch(messageId);
+  } catch {
+    entry.resolve("Poll closed but failed to fetch results.");
+    pendingPolls.delete(messageId);
+    return true;
+  }
+
+  // Remove the "Close Poll" button
+  try {
+    await updatedMessage.edit({ components: [] });
+  } catch {
+    // Non-critical — button removal failed
+  }
+
+  // Build result string
+  const poll = updatedMessage.poll;
+  const answers = poll.answers;
+  let totalVotes = 0;
+  const lines = [];
+
+  for (const [, answer] of answers) {
+    totalVotes += answer.voteCount;
+    lines.push({ text: answer.text, votes: answer.voteCount });
+  }
+
+  if (totalVotes === 0) {
+    entry.resolve("Poll closed with no votes.");
+    pendingPolls.delete(messageId);
+    return true;
+  }
+
+  // Find winner(s)
+  const maxVotes = Math.max(...lines.map((l) => l.votes));
+
+  let result = `Poll results for "${poll.question.text}":\n`;
+  for (const line of lines) {
+    const marker = line.votes === maxVotes ? " (winner)" : "";
+    result += `- ${line.text}: ${line.votes} votes${marker}\n`;
+  }
+  const winners = lines.filter((l) => l.votes === maxVotes);
+  if (winners.length === 1) {
+    result += `Winner: ${winners[0].text} (${winners[0].votes} of ${totalVotes} votes)`;
+  } else {
+    result += `Tie between: ${winners.map((w) => w.text).join(", ")} (${maxVotes} votes each)`;
+  }
+
+  entry.resolve(result);
+  pendingPolls.delete(messageId);
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Claude Agent SDK interaction
 // ---------------------------------------------------------------------------
