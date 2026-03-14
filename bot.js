@@ -194,10 +194,10 @@ function chunkMessage(text) {
 // File attachment handling
 // ---------------------------------------------------------------------------
 
-async function saveAttachments(attachments) {
+async function saveAttachments(attachments, targetDir) {
   const saved = [];
   for (const [, att] of attachments) {
-    const dest = resolve(WORKING_DIR, att.name);
+    const dest = resolve(targetDir, att.name);
     const res = await fetch(att.url);
     const buf = Buffer.from(await res.arrayBuffer());
     writeFileSync(dest, buf);
@@ -542,16 +542,16 @@ client.on(Events.MessageCreate, async (message) => {
     .replace(new RegExp(`<@!?${client.user.id}>`, "g"), "")
     .trim();
 
+  const session = getSession(message.channelId);
+
   // Handle attachments
   if (message.attachments.size > 0) {
-    const saved = await saveAttachments(message.attachments);
+    const saved = await saveAttachments(message.attachments, session.cwd);
     const refs = saved.map((p) => `[Attached: ${p}]`).join("\n");
     prompt = prompt ? `${prompt}\n\n${refs}` : refs;
   }
 
   if (!prompt) return;
-
-  const session = getSession(message.channelId);
 
   // Show typing while Claude works
   await message.channel.sendTyping();
