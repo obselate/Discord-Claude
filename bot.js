@@ -280,6 +280,36 @@ async function sendToClaud(prompt, session, channel) {
 }
 
 // ---------------------------------------------------------------------------
+// Discord markdown formatting
+// ---------------------------------------------------------------------------
+
+/**
+ * Post-processes Claude's markdown output for Discord compatibility.
+ * Discord supports: bold, italic, code fences, blockquotes, lists, strikethrough.
+ * Discord does NOT support: # headings, markdown tables, horizontal rules.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function formatForDiscord(text) {
+  return text
+    // H2 → underline+bold (one level of visual distinction)
+    .replace(/^## (.+)$/gm, "__**$1**__")
+    // H1 and H3 → bold
+    .replace(/^#{1,3} (.+)$/gm, "**$1**")
+    // Markdown tables → fenced code block
+    // A table starts with a | line followed by a |---| line
+    .replace(/(\|.+\|\n\|[-| :]+\|\n(?:\|.+\|\n?)*)/g, (match) => {
+      return "```\n" + match.trimEnd() + "\n```";
+    })
+    // Horizontal rules → stripped
+    .replace(/^---+$/gm, "")
+    // Clean up any triple+ blank lines left behind
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// ---------------------------------------------------------------------------
 // Discord message chunking
 // ---------------------------------------------------------------------------
 
@@ -427,6 +457,43 @@ const commands = [
         max_length: 1000,
       },
     ],
+  },
+  {
+    name: "compact",
+    description: "Compact the conversation context to free up context window",
+    options: [
+      {
+        name: "instructions",
+        description: "Optional guidance for the summary (e.g. 'focus on auth module')",
+        type: 3, // STRING
+        required: false,
+        max_length: 500,
+      },
+    ],
+  },
+  {
+    name: "memory",
+    description: "List CLAUDE.md memory files in the working directory",
+  },
+  {
+    name: "cost",
+    description: "Show token usage and context window usage for this session",
+  },
+  {
+    name: "doctor",
+    description: "Run a health check on the bot environment",
+  },
+  {
+    name: "status",
+    description: "Show full session state summary",
+  },
+  {
+    name: "mcp",
+    description: "List connected MCP servers",
+  },
+  {
+    name: "tools",
+    description: "List available tools in this session",
   },
 ];
 
