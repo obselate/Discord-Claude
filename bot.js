@@ -307,6 +307,46 @@ function chunkMessage(text) {
 }
 
 // ---------------------------------------------------------------------------
+// Visual helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Renders a 16-character block-character progress bar.
+ * @param {number} value - Current value
+ * @param {number} max - Maximum value
+ * @returns {string} e.g. "████████░░░░░░░░  50%"
+ */
+function buildBar(value, max) {
+  const pct = max > 0 ? Math.min(1, value / max) : 0;
+  const filled = Math.round(pct * 16);
+  const empty = 16 - filled;
+  const bar = "█".repeat(filled) + "░".repeat(empty);
+  const label = `${Math.round(pct * 100)}%`;
+  return `${bar}  ${label}`;
+}
+
+/**
+ * Returns list of MCP server names via `claude mcp list`, or [] on failure.
+ * Note: `claude mcp list` returns server names, not individual tool names.
+ * Listing individual tools per server requires deeper SDK introspection
+ * not available in the current Agent SDK version.
+ * @param {string} cwd - Working directory for the claude command
+ * @returns {string[]}
+ */
+function getMcpServers(cwd) {
+  // child_process is required inline here to keep it co-located with the
+  // function — execSync is only used by this helper so it isn't hoisted
+  // to the top-level imports.
+  const { execSync } = require("child_process");
+  try {
+    const out = execSync("claude mcp list", { encoding: "utf8", timeout: 5000, cwd }).trim();
+    return out.split("\n").map((l) => l.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // File attachment handling
 // ---------------------------------------------------------------------------
 
