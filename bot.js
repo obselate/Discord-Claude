@@ -201,7 +201,7 @@ async function sendToClaud(prompt, session, channel) {
   }
 
   const chunks = [];
-  const toolUseLog = [];
+  const toolNames = new Set();
 
   console.log(`Sending to Claude | resume: ${session.sessionId || "new"}`);
 
@@ -230,7 +230,7 @@ async function sendToClaud(prompt, session, channel) {
               chunks.push(block.text);
             }
             if (block.type === "tool_use") {
-              toolUseLog.push(`🔧 *${block.name}*`);
+              toolNames.add(block.name);
             }
           }
           break;
@@ -261,12 +261,13 @@ async function sendToClaud(prompt, session, channel) {
 
   session.messageCount++;
 
-  // Combine tool use indicators with response
-  let response = "";
-  if (toolUseLog.length > 0) {
-    response += toolUseLog.join(" → ") + "\n\n";
+  // Assemble response with tool summary footer
+  let response = chunks.join("\n\n").trim();
+  if (toolNames.size > 0) {
+    const count = toolNames.size;
+    const label = count === 1 ? "tool" : "tools";
+    response += `\n\n> *Used ${count} ${label}: ${[...toolNames].join(", ")}*`;
   }
-  response += chunks.join("\n\n").trim();
 
   return response || "(empty response)";
 }
