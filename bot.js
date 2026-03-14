@@ -266,7 +266,7 @@ async function sendToClaud(prompt, session, channel) {
   if (toolUseLog.length > 0) {
     response += toolUseLog.join(" → ") + "\n\n";
   }
-  response += chunks.join("").trim();
+  response += chunks.join("\n\n").trim();
 
   return response || "(empty response)";
 }
