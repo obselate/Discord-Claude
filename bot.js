@@ -167,6 +167,9 @@ async function resolvePoll(messageId, pollMessage) {
 async function sendToClaud(prompt, session, channel) {
   const { query } = await loadSDK();
 
+  // Set poll context so the MCP tool handler can access the channel
+  pollContext.channel = channel || null;
+
   const options = {
     permissionMode: PERMISSION_MODE,
     allowedTools: [
@@ -190,6 +193,10 @@ async function sendToClaud(prompt, session, channel) {
 
   if (session.sessionId) {
     options.resume = session.sessionId;
+  }
+
+  if (pollServer) {
+    options.mcpServers = { "discord-polls": pollServer };
   }
 
   const chunks = [];
