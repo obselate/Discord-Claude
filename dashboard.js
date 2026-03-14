@@ -31,6 +31,53 @@ let dashboardChannel = null;
 let botUserId = null;
 
 // ---------------------------------------------------------------------------
+// Data fetching
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch beads from bd CLI, grouped by status.
+ * @returns {Promise<{ inProgress: Array, open: Array, blocked: Array } | null>}
+ *   null if bd commands fail
+ */
+async function fetchBeads() {
+  try {
+    const opts = { cwd: PROJECT_ROOT };
+
+    const [listResult, blockedResult] = await Promise.all([
+      execAsync("bd list --json --sort=priority", opts),
+      execAsync("bd blocked --json", opts),
+    ]);
+
+    const allBeads = JSON.parse(listResult.stdout || "[]");
+    const blockedBeads = JSON.parse(blockedResult.stdout || "[]");
+
+    // Build a Map of blocked bead IDs -> blocker info for quick lookup
+    const blockedMap = new Map();
+    for (const b of blockedBeads) {
+      blockedMap.set(b.id, b.blocked_by || []);
+    }
+
+    // Group: blocked beads go to blocked section regardless of their status field
+    const groups = { inProgress: [], open: [], blocked: [] };
+
+    for (const bead of allBeads) {
+      if (blockedMap.has(bead.id)) {
+        groups.blocked.push({ ...bead, blockedBy: blockedMap.get(bead.id) });
+      } else if (bead.status === "in_progress") {
+        groups.inProgress.push(bead);
+      } else {
+        groups.open.push(bead);
+      }
+    }
+
+    return groups;
+  } catch (err) {
+    console.error("[Dashboard] bd command failed:", err.message);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
