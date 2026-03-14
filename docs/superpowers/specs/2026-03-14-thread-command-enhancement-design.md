@@ -56,7 +56,7 @@ The `saveAttachments` function currently saves files to the global `WORKING_DIR`
 // Before
 const dest = resolve(WORKING_DIR, att.name);
 
-// After — pass session.cwd (or WORKING_DIR fallback) from the caller
+// After — caller passes session.cwd, which always defaults to WORKING_DIR via getSession()
 const dest = resolve(targetDir, att.name);
 ```
 
@@ -86,7 +86,7 @@ The `messageCreate` handler already has access to the session via `getSession(ch
 
 ### Security Note
 
-Directory paths come from Discord user input with no whitelist restriction. This is acceptable because Clod is intended for use on private servers with trusted users, and the bot already runs in `bypassPermissions` mode giving Claude unrestricted filesystem access. If Clod is ever deployed to untrusted servers, path validation (e.g., restricting to an allowed parent directory) should be added.
+Directory paths come from Discord user input with no whitelist restriction. This is acceptable because Clod is intended for use on private servers with trusted users, and the bot already runs in `bypassPermissions` mode giving Claude unrestricted filesystem access. Discord enforces non-empty input for required string options, so no explicit empty-string check is needed. If Clod is ever deployed to untrusted servers, path validation (e.g., restricting to an allowed parent directory) should be added.
 
 ### Concurrent Access
 
