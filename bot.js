@@ -310,8 +310,9 @@ async function saveAttachments(attachments, targetDir) {
     const res = await fetch(att.url);
     const buf = Buffer.from(await res.arrayBuffer());
     writeFileSync(dest, buf);
-    saved.push(dest);
-    console.log(`Saved attachment: ${dest}`);
+    const isImage = att.contentType && att.contentType.startsWith("image/");
+    saved.push({ path: dest, isImage });
+    console.log(`Saved attachment: ${dest} (${isImage ? "image" : "file"})`);
   }
   return saved;
 }
@@ -804,7 +805,13 @@ client.on(Events.MessageCreate, async (message) => {
   // Handle attachments
   if (message.attachments.size > 0) {
     const saved = await saveAttachments(message.attachments, session.cwd);
-    const refs = saved.map((p) => `[Attached: ${p}]`).join("\n");
+    const refs = saved
+      .map((att) =>
+        att.isImage
+          ? `[Attached image: ${att.path}] — Use the Read tool to view this image.`
+          : `[Attached: ${att.path}]`
+      )
+      .join("\n");
     prompt = prompt ? `${prompt}\n\n${refs}` : refs;
   }
 
