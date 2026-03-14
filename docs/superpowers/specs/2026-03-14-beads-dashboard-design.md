@@ -14,21 +14,25 @@ A dedicated Discord channel displays a single, auto-updating message showing all
 
 ### New file: `dashboard.js`
 
-Exports a single function: `startDashboard(client)`.
+Exports `startDashboard(client)` and `stopDashboard()`.
 
-Called from `bot.js` inside the `ClientReady` handler, after SDK and MCP server setup.
+- `startDashboard(client)` — called from `bot.js` inside the `ClientReady` handler, after SDK and MCP server setup. Reads `BEADS_CHANNEL_ID` and project root from `process.env` internally.
+- `stopDashboard()` — clears the polling interval. Useful for clean shutdown and `--watch` restarts.
+
+Target: under 500 LOC.
 
 ### Data flow
 
-1. **Startup**: `startDashboard(client)` fetches the target channel via `BEADS_CHANNEL_ID`.
+1. **Startup**: `startDashboard(client)` reads `BEADS_CHANNEL_ID` and project root from `process.env`, fetches the target channel.
 2. **Find or create message**: Searches the channel for the bot's most recent message. If found, reuses it (edits). If not, sends a new one.
 3. **Poll loop** (every 30s):
-   - Shells out to `bd list --status=in_progress`, `bd list --status=open`, and `bd blocked` via `child_process.execSync` (or `exec` with await).
-   - Parses output to extract bead ID, title, priority, status, and blocker info.
+   - Shells out to `bd list --json --sort=priority` and `bd blocked --json` via `util.promisify(child_process.exec)` (async — never blocks the event loop). All `bd` calls use `cwd` set to the project root (parent of `claude-workdir`, where `.beads/` lives).
+   - Groups beads by status (`in_progress`, `open`, `blocked`) from the JSON output.
    - Builds the formatted message string.
    - Compares against the cached previous message content.
    - If identical, skips (lazy — no API call).
    - If different, edits the Discord message and updates the cache.
+   - If content exceeds 1900 chars, truncates each section with "...and N more" to fit Discord's 2000-char limit (dashboard must be a single editable message).
 
 ## Message Format
 
@@ -66,13 +70,35 @@ If the tracked message is deleted or the edit fails, the bot sends a new message
 
 ## Parsing `bd` Output
 
-The bot uses `bd list --json` if available for structured output. Falls back to parsing text output if `--json` is not supported. Key fields needed per bead:
+### Commands
 
-- ID (e.g., `beads-abc`)
-- Title
-- Priority (0-4)
-- Status (`open`, `in_progress`)
-- Blocked-by list (from `bd blocked`)
+Two async shell calls per tick, both with `--json`:
+
+1. `bd list --json --sort=priority` — returns all non-closed beads with status, priority, title, etc.
+2. `bd blocked --json` — returns blocked beads with dependency/blocker relationship info.
+
+The dashboard groups beads from call 1 by `status` field (`in_progress`, `open`). Beads appearing in call 2 are placed in the Blocked section instead of their original status group.
+
+### JSON shape (from `bd list --json`)
+
+```json
+{
+  "id": "dcbot-ad6",
+  "title": "Test bead",
+  "status": "open",
+  "priority": 2,
+  "issue_type": "task",
+  "owner": "zack796@gmail.com",
+  "created_at": "2026-03-14T20:21:51Z",
+  "created_by": "Xaz",
+  "updated_at": "2026-03-14T20:21:51Z",
+  "dependency_count": 0,
+  "dependent_count": 0,
+  "comment_count": 0
+}
+```
+
+Key fields used: `id`, `title`, `priority`, `status`.
 
 ## Error Handling
 
