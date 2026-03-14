@@ -20,6 +20,7 @@ const {
 } = require("discord.js");
 const { resolve } = require("path");
 const { mkdirSync, writeFileSync } = require("fs");
+const { startDashboard, stopDashboard } = require("./dashboard.js");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -719,6 +720,11 @@ client.once(Events.ClientReady, async (c) => {
   } catch (err) {
     console.error("Failed to register slash commands:", err);
   }
+
+  // Start beads dashboard polling
+  startDashboard(c).catch((err) =>
+    console.error("[Dashboard] Startup failed:", err)
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -828,6 +834,17 @@ client.on(Events.MessageCreate, async (message) => {
     console.error("Message handling error:", err);
     await message.reply(`Something broke:\n\`\`\`\n${err.message}\n\`\`\``);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Graceful shutdown
+// ---------------------------------------------------------------------------
+
+// Graceful shutdown — clean up dashboard interval (useful for --watch restarts)
+process.on("SIGINT", () => {
+  stopDashboard();
+  client.destroy();
+  process.exit(0);
 });
 
 // ---------------------------------------------------------------------------
