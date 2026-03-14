@@ -75,6 +75,16 @@ function getSession(channelId) {
 }
 
 // ---------------------------------------------------------------------------
+// Poll state
+// ---------------------------------------------------------------------------
+
+/** Mutable context so the MCP tool handler can access the current Discord channel */
+const pollContext = { channel: null };
+
+/** @type {Map<string, { resolve: Function, timeout: NodeJS.Timeout, closed: boolean }>} */
+const pendingPolls = new Map();
+
+// ---------------------------------------------------------------------------
 // Claude Agent SDK interaction
 // ---------------------------------------------------------------------------
 
