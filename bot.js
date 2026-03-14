@@ -624,6 +624,87 @@ client.once(Events.ClientReady, async (c) => {
   await loadSDK();
   console.log("Claude Agent SDK loaded.");
 
+  // Create in-process MCP server for Discord tools
+  const { z } = await import("zod");
+  const { createSdkMcpServer, tool } = agentSDK;
+
+  const createPollTool = tool(
+    "CreatePoll",
+    "Create a Discord poll to ask channel members a question with multiple choice options. Use this when you want to present users with choices and let them vote. The poll will be posted in the current Discord channel. Results are returned automatically when the poll is closed.",
+    {
+      question: z.string().max(300).describe("The poll question to ask"),
+      options: z.array(z.string().max(55)).min(2).max(10).describe("Answer choices (2-10 options, max 55 chars each)"),
+      duration: z.number().min(1).max(768).optional().default(1).describe("Poll duration in hours (default: 1)"),
+    },
+    async (args) => {
+      const channel = pollContext.channel;
+      if (!channel) {
+        return { content: [{ type: "text", text: "Error: No Discord channel available to post poll." }] };
+      }
+
+      try {
+        // Post the poll with a "Close Poll" button
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId("close_poll_pending") // Updated after message is sent
+            .setLabel("Close Poll")
+            .setStyle(ButtonStyle.Secondary)
+        );
+
+        const pollMessage = await channel.send({
+          poll: {
+            question: { text: args.question },
+            answers: args.options.map((opt) => ({ text: opt })),
+            duration: args.duration,
+            allowMultiselect: false,
+          },
+          components: [row],
+        });
+
+        // Update button custom ID to include the real message ID
+        const updatedRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`close_poll_${pollMessage.id}`)
+            .setLabel("Close Poll")
+            .setStyle(ButtonStyle.Secondary)
+        );
+        await pollMessage.edit({ components: [updatedRow] });
+
+        console.log(`[Poll] Created poll "${args.question}" in ${channel.id}, message ${pollMessage.id}`);
+
+        // Block until poll is closed
+        const resultText = await new Promise((resolve) => {
+          const timeout = setTimeout(async () => {
+            // Timeout fallback — re-fetch message and resolve
+            try {
+              const msg = await channel.messages.fetch(pollMessage.id);
+              await resolvePoll(pollMessage.id, msg);
+            } catch {
+              const entry = pendingPolls.get(pollMessage.id);
+              if (entry && !entry.closed) {
+                entry.closed = true;
+                resolve("Poll timed out and results could not be fetched.");
+                pendingPolls.delete(pollMessage.id);
+              }
+            }
+          }, args.duration * 60 * 60 * 1000);
+
+          pendingPolls.set(pollMessage.id, { resolve, timeout, closed: false });
+        });
+
+        return { content: [{ type: "text", text: resultText }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: `Error creating poll: ${err.message}` }] };
+      }
+    }
+  );
+
+  pollServer = createSdkMcpServer({
+    name: "discord-polls",
+    tools: [createPollTool],
+  });
+  console.log("Discord polls MCP server created.");
+
   const rest = new REST().setToken(DISCORD_TOKEN);
   try {
     await rest.put(Routes.applicationCommands(c.user.id), { body: commands });
