@@ -78,6 +78,120 @@ async function fetchBeads() {
 }
 
 // ---------------------------------------------------------------------------
+// Message formatting
+// ---------------------------------------------------------------------------
+
+/**
+ * Format the dashboard header with timestamp.
+ * @returns {string}
+ */
+function formatHeader() {
+  const now = new Date();
+  const timestamp = now.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+  return `📋 **Beads Dashboard**\nLast updated: ${timestamp}\n\n`;
+}
+
+// Header length is stable (varies by ~1 char for hour digit). Use a safe estimate.
+const HEADER_RESERVE = 60;
+
+/**
+ * Format grouped beads into the body (no header/timestamp).
+ * @param {{ inProgress: Array, open: Array, blocked: Array }} groups
+ * @returns {string}
+ */
+function formatBody(groups) {
+  const { inProgress, open, blocked } = groups;
+
+  if (inProgress.length === 0 && open.length === 0 && blocked.length === 0) {
+    return "No open beads 🎉";
+  }
+
+  const maxBody = MAX_MSG_LEN - HEADER_RESERVE;
+  const lines = [];
+
+  if (inProgress.length > 0) {
+    lines.push("🔴 **In Progress**");
+    lines.push(...truncateSection(formatSection(inProgress), maxBody, lines));
+    lines.push("");
+  }
+
+  if (open.length > 0) {
+    lines.push("🟡 **Open**");
+    lines.push(...truncateSection(formatSection(open), maxBody, lines));
+    lines.push("");
+  }
+
+  if (blocked.length > 0) {
+    lines.push("🔵 **Blocked**");
+    lines.push(...truncateSection(formatBlockedSection(blocked), maxBody, lines));
+    lines.push("");
+  }
+
+  return lines.join("\n").trimEnd();
+}
+
+/**
+ * Format a list of beads as bullet lines, sorted by priority.
+ * @param {Array} beads
+ * @returns {string[]}
+ */
+function formatSection(beads) {
+  return beads
+    .sort((a, b) => (a.priority ?? 4) - (b.priority ?? 4))
+    .map((b) => `• [P${b.priority ?? "?"}] ${b.id} — ${b.title}`);
+}
+
+/**
+ * Format blocked beads with blocker info.
+ * @param {Array} beads
+ * @returns {string[]}
+ */
+function formatBlockedSection(beads) {
+  return beads
+    .sort((a, b) => (a.priority ?? 4) - (b.priority ?? 4))
+    .map((b) => {
+      const blockers = b.blockedBy;
+      const suffix =
+        Array.isArray(blockers) && blockers.length > 0
+          ? ` ⛔ blocked by ${blockers.join(", ")}`
+          : "";
+      return `• [P${b.priority ?? "?"}] ${b.id} — ${b.title}${suffix}`;
+    });
+}
+
+/**
+ * Truncate section lines if adding them would exceed the max body length.
+ * Returns the lines that fit, plus an "...and N more" line if truncated.
+ * @param {string[]} sectionLines - formatted bead lines for this section
+ * @param {number} maxBody - max total body length
+ * @param {string[]} existingLines - lines already accumulated
+ * @returns {string[]}
+ */
+function truncateSection(sectionLines, maxBody, existingLines) {
+  const currentLen = existingLines.join("\n").length;
+  const result = [];
+
+  for (let i = 0; i < sectionLines.length; i++) {
+    const candidateLen = currentLen + [...result, sectionLines[i]].join("\n").length;
+    if (candidateLen > maxBody - 30) {
+      const remaining = sectionLines.length - i;
+      result.push(`*...and ${remaining} more*`);
+      break;
+    }
+    result.push(sectionLines[i]);
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
