@@ -249,11 +249,25 @@ const commands = [
     description: "Create a new thread with a fresh Claude session",
     options: [
       {
+        name: "directory",
+        description: "Project directory path (created if it doesn't exist)",
+        type: 3, // STRING
+        required: true,
+        max_length: 260,
+      },
+      {
         name: "topic",
         description: "Thread name/topic (defaults to 'Claude Thread – <date>')",
         type: 3, // STRING
         required: false,
         max_length: 100,
+      },
+      {
+        name: "description",
+        description: "Description shown in the forum post starter message",
+        type: 3, // STRING
+        required: false,
+        max_length: 1000,
       },
     ],
   },
