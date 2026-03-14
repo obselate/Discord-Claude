@@ -44,6 +44,7 @@ process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = "2764800000"; // 768 hours in ms
 
 // Agent SDK is ESM-only, so we load it dynamically
 let agentSDK = null;
+let pollServer = null; // In-process MCP server for Discord tools
 
 async function loadSDK() {
   if (!agentSDK) {
@@ -637,6 +638,33 @@ client.once(Events.ClientReady, async (c) => {
 // ---------------------------------------------------------------------------
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  // Handle "Close Poll" button clicks
+  if (interaction.isButton() && interaction.customId.startsWith("close_poll_")) {
+    const messageId = interaction.customId.replace("close_poll_", "");
+    const entry = pendingPolls.get(messageId);
+
+    if (!entry || entry.closed) {
+      await interaction.reply({ content: "Poll already closed.", ephemeral: true });
+      return;
+    }
+
+    await interaction.deferUpdate();
+
+    try {
+      const pollMessage = await interaction.channel.messages.fetch(messageId);
+      await resolvePoll(messageId, pollMessage);
+    } catch (err) {
+      console.error("[Poll] Error closing poll:", err);
+      if (entry && !entry.closed) {
+        entry.closed = true;
+        clearTimeout(entry.timeout);
+        entry.resolve("Poll closed but failed to fetch results.");
+        pendingPolls.delete(messageId);
+      }
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
   try {
     await handleCommand(interaction);
