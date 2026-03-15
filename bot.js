@@ -878,6 +878,7 @@ async function handleCommand(interaction) {
     }
 
     case "mcp": {
+      await interaction.deferReply();
       const session = getSession(channelId);
       const servers = getMcpServers(session.cwd);
 
@@ -888,11 +889,12 @@ async function handleCommand(interaction) {
         output += servers.map((s) => `• ${s}`).join("\n");
       }
 
-      await interaction.reply(output);
+      await interaction.editReply(output);
       break;
     }
 
     case "tools": {
+      await interaction.deferReply();
       const session = getSession(channelId);
       const mcpServers = getMcpServers(session.cwd);
 
@@ -909,7 +911,7 @@ async function handleCommand(interaction) {
         output += "**MCP Servers:**\n" + mcpServers.map((s) => `• ${s}`).join("\n");
       }
 
-      await interaction.reply(output);
+      await interaction.editReply(output);
       break;
     }
   }
@@ -1169,5 +1171,17 @@ process.on("SIGINT", () => {
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Error handling — prevent unhandled 'error' events from crashing the process
+// ---------------------------------------------------------------------------
+
+client.on(Events.Error, (err) => {
+  console.error("[Discord] Client error:", err);
+});
+
+process.on("unhandledRejection", (err) => {
+  console.error("[Process] Unhandled rejection:", err);
+});
 
 client.login(DISCORD_TOKEN);
