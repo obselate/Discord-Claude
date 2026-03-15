@@ -2,6 +2,15 @@
   "name": "discord-claude-bot",
   "version": "1.0.0",
   "description": "Discord frontend for headless Claude Code via Agent SDK",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/obselate/Discord-Claude.git"
+  },
+  "homepage": "https://github.com/obselate/Discord-Claude",
+  "bugs": {
+    "url": "https://github.com/obselate/Discord-Claude/issues"
+  },
+  "license": "GPL-3.0",
   "scripts": {
     "start": "node bot.js",
     "dev": "node --watch bot.js",
