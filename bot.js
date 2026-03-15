@@ -876,6 +876,21 @@ async function handleCommand(interaction) {
       await interaction.editReply(output);
       break;
     }
+
+    case "mcp": {
+      const session = getSession(channelId);
+      const servers = getMcpServers(session.cwd);
+
+      let output = "🔌 **MCP Servers**\n";
+      if (servers.length === 0) {
+        output += "No MCP servers configured. Run `claude mcp add` to configure one.";
+      } else {
+        output += servers.map((s) => `• ${s}`).join("\n");
+      }
+
+      await interaction.reply(output);
+      break;
+    }
   }
 }
 
