@@ -841,6 +841,41 @@ async function handleCommand(interaction) {
       await interaction.reply(output);
       break;
     }
+
+    case "status": {
+      await interaction.deferReply();
+
+      const session = sessions.get(channelId);
+
+      if (!session || session.sessionId === null) {
+        await interaction.editReply(
+          "📡 **Bot Status**\nNo active session. Send a message to start one."
+        );
+        break;
+      }
+
+      const mcpList = getMcpServers(session.cwd);
+      const mcpDisplay = mcpList.length > 0 ? mcpList.join(", ") : "none";
+
+      const total = (session.inputTokens || 0) + (session.outputTokens || 0);
+      const CONTEXT_MAX = 200_000;
+      const bar = buildBar(total, CONTEXT_MAX);
+
+      const shortId = session.sessionId ? session.sessionId.slice(0, 8) : "none";
+      const modelDisplay = session.model || "(SDK default)";
+
+      const output =
+        `📡 **Bot Status**\n\n` +
+        `**Model:** ${modelDisplay}\n` +
+        `**Session:** active (ID: ${shortId}...) | Messages: ${session.messageCount}\n` +
+        `**Working Dir:** ${session.cwd}\n\n` +
+        `**Context:**\n` +
+        `${bar}  ${total.toLocaleString()} / ${CONTEXT_MAX.toLocaleString()} tokens\n\n` +
+        `**MCP Servers:** ${mcpDisplay}`;
+
+      await interaction.editReply(output);
+      break;
+    }
   }
 }
 
