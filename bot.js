@@ -891,6 +891,27 @@ async function handleCommand(interaction) {
       await interaction.reply(output);
       break;
     }
+
+    case "tools": {
+      const session = getSession(channelId);
+      const mcpServers = getMcpServers(session.cwd);
+
+      let output =
+        "🛠️ **Available Tools**\n\n" +
+        "**Built-in:**\n" +
+        "• Read, Write, Edit, Bash, Glob, Grep\n" +
+        "• WebSearch, WebFetch\n" +
+        "• TodoWrite, NotebookEdit\n\n";
+
+      if (mcpServers.length === 0) {
+        output += "**MCP Servers:** none configured";
+      } else {
+        output += "**MCP Servers:**\n" + mcpServers.map((s) => `• ${s}`).join("\n");
+      }
+
+      await interaction.reply(output);
+      break;
+    }
   }
 }
 
