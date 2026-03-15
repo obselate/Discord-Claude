@@ -7,15 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- Per-thread pinned beads dashboard — each forum thread with a `.beads/` project gets an auto-updating pinned status message.
-
-### Changed
-
-- Refactored bot.js (1200 → 383 lines) into focused `lib/` modules: sessions, commands, handlers, sdk, formatting, attachments.
-- Dashboard rewritten from single-channel to per-thread model with single ticker loop.
-
 ## [1.0.0] - 2026-03-15
 
 ### Added
@@ -29,7 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP server integration for extended tool capabilities.
 - Discord-flavored markdown formatting for Claude responses.
 - Token usage and context window tracking per session.
+- Per-thread pinned beads dashboard — each forum thread with a `.beads/` project gets an auto-updating pinned status message.
 - Environment health checker via `npm run check`.
+- Modular codebase: `lib/` modules for sessions, commands, handlers, sdk, formatting, attachments.
 
 ### Fixed
 
