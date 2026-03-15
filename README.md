@@ -9,6 +9,7 @@ Before you start, make sure you have:
 - **Node.js 18+** — `node --version` should print `v18.x` or higher
 - **Claude Code CLI** — install at [claude.ai/code](https://claude.ai/code), then run `claude --version` to confirm it's on your PATH and authenticated
 - **A Discord bot token** — see setup steps below
+- **Beads** (optional) — for per-thread issue tracking dashboards. Install from [github.com/steveyegge/beads](https://github.com/steveyegge/beads), then run `bd --version` to confirm
 
 ## Setup
 
@@ -25,8 +26,8 @@ Before you start, make sure you have:
 ### 2. Install and Run
 
 ```bash
-git clone <this-repo>
-cd discord-claude-bot
+git clone https://github.com/obselate/Discord-Claude.git
+cd Discord-Claude
 npm install
 cp .env.example .env
 # Edit .env and paste your DISCORD_BOT_TOKEN
