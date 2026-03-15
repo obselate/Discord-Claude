@@ -69,7 +69,7 @@ Edit `.env` (copy from `.env.example`):
 |----------|----------|---------|-------------|
 | `DISCORD_BOT_TOKEN` | ✅ Yes | — | From Discord Developer Portal |
 | `CLAUDE_WORKDIR` | No | `./claude-workdir` | Working directory for Claude's file operations |
-| `CLAUDE_MODEL` | No | SDK default | Model override (e.g. `claude-sonnet-4-5`) |
+| `CLAUDE_MODEL` | No | SDK default | Model override (e.g. `sonnet`) |
 | `FORUM_CHANNEL_ID` | No | — | Channel ID for `/thread` command (must be a Forum channel) |
 
 ## Troubleshooting
