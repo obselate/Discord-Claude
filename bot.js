@@ -814,6 +814,33 @@ async function handleCommand(interaction) {
       );
       break;
     }
+
+    case "doctor": {
+      const health = require("./scripts/health.js");
+
+      const nodeResult   = health.checkNodeVersion();
+      const tokenResult  = health.checkDiscordToken();
+      const cliResult    = health.checkClaudeCLI();
+      const dirResult    = health.checkWorkingDir(WORKING_DIR);
+      const forumResult  = health.checkForumChannelId();
+
+      const fmt = (result, optional = false) => {
+        if (result.ok) return `✅ ${result.message}`;
+        return optional ? `⚠️ ${result.message}` : `❌ ${result.message}`;
+      };
+
+      const output = [
+        "🩺 **Bot Health Check**",
+        fmt(nodeResult),
+        fmt(tokenResult),
+        fmt(cliResult),
+        fmt(dirResult),
+        fmt(forumResult, true),
+      ].join("\n");
+
+      await interaction.reply(output);
+      break;
+    }
   }
 }
 
