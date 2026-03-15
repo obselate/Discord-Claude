@@ -4,7 +4,8 @@
   "description": "Discord frontend for headless Claude Code via Agent SDK",
   "scripts": {
     "start": "node bot.js",
-    "dev": "node --watch bot.js"
+    "dev": "node --watch bot.js",
+    "check": "node scripts/check.js"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
