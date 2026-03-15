@@ -1091,6 +1091,11 @@ client.on(Events.MessageCreate, async (message) => {
   const isDM = !message.guild;
   const isMentioned = message.mentions.has(client.user);
   const isBotThread = botThreads.has(message.channelId);
+  // Auto-detect forum threads by channel type — survives bot restarts unlike the in-memory Set
+  const isForumThread =
+    message.channel.isThread() &&
+    message.channel.parent?.type === ChannelType.GuildForum &&
+    (!FORUM_CHANNEL_ID || message.channel.parentId === FORUM_CHANNEL_ID);
   const isReplyToBot =
     message.reference &&
     (
@@ -1099,7 +1104,7 @@ client.on(Events.MessageCreate, async (message) => {
         .catch(() => null)
     )?.author?.id === client.user.id;
 
-  if (!isDM && !isMentioned && !isBotThread && !isReplyToBot) return;
+  if (!isDM && !isMentioned && !isBotThread && !isForumThread && !isReplyToBot) return;
 
   // Strip bot mention from prompt
   let prompt = message.content
