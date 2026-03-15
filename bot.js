@@ -738,6 +738,56 @@ async function handleCommand(interaction) {
       );
       break;
     }
+
+    case "memory": {
+      const { existsSync, readFileSync } = require("fs");
+      const path = require("path");
+      const session = getSession(channelId);
+
+      // Walk from session.cwd up to (and including) WORKING_DIR, collecting CLAUDE.md files
+      const found = [];
+      let dir = path.resolve(session.cwd);
+      const root = path.resolve(WORKING_DIR);
+
+      // Normalise to forward slashes for consistent comparison on Windows
+      const normalise = (p) => p.replace(/\\/g, "/");
+
+      while (true) {
+        const candidate = path.join(dir, "CLAUDE.md");
+        if (existsSync(candidate)) {
+          found.push(candidate);
+        }
+
+        // Stop after processing WORKING_DIR — don't ascend above it
+        if (normalise(dir) === normalise(root)) break;
+
+        const parent = path.dirname(dir);
+        // Guard against hitting the filesystem root before WORKING_DIR
+        if (parent === dir) break;
+        dir = parent;
+      }
+
+      if (found.length === 0) {
+        await interaction.reply(
+          "📝 No CLAUDE.md memory files found in your working directory tree."
+        );
+        break;
+      }
+
+      // Build response string
+      let output = "📝 **Memory files found:**\n";
+      for (const filePath of found) {
+        const contents = readFileSync(filePath, "utf8");
+        output += `\n**\`${filePath}\`**\n\`\`\`\n${contents}\n\`\`\`\n`;
+      }
+
+      const chunks = chunkMessage(output.trim());
+      await interaction.reply(chunks[0]);
+      for (let i = 1; i < chunks.length; i++) {
+        await interaction.followUp(chunks[i]);
+      }
+      break;
+    }
   }
 }
 
