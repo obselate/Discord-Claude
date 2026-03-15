@@ -285,7 +285,7 @@ async function sendToClaud(prompt, session, channel) {
     response += `\n\n> *Used ${count} ${label}: ${[...toolNames].join(", ")}*`;
   }
 
-  return response || "(empty response)";
+  return formatForDiscord(response) || "(empty response)";
 }
 
 // ---------------------------------------------------------------------------
