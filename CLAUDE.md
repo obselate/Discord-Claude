@@ -9,8 +9,14 @@ Discord bot wrapping Claude Code via the Agent SDK. CommonJS with dynamic ESM im
 - `npm run check` — run health/lint checks
 
 ## Architecture
-- `bot.js` — main bot: config, session tracking, SDK interaction, Discord handlers (~1200 lines)
-- `dashboard.js` — web dashboard for monitoring (~300 lines)
+- `bot.js` — orchestrator: config, client setup, poll state, event wiring (~380 lines)
+- `lib/sessions.js` — session Map + `getSession()`
+- `lib/commands.js` — slash command definitions array
+- `lib/handlers.js` — slash command handler switch
+- `lib/sdk.js` — Agent SDK loading + `sendToClaude()`
+- `lib/formatting.js` — Discord markdown, chunking, progress bars, MCP helpers
+- `lib/attachments.js` — file attachment saving
+- `dashboard.js` — per-thread pinned beads dashboards (~315 lines)
 - `scripts/` — `check.js`, `health.js` utilities
 - Agent SDK is ESM-only, loaded via dynamic `import()` in CJS
 - Sessions tracked per channel/thread ID in an in-memory Map

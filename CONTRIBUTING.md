@@ -42,7 +42,7 @@ Common prefixes: `feat`, `fix`, `chore`, `refactor`, `docs`, `test`.
 
 ## Pull Requests
 
-- Branch from `main`. Keep the diff minimal and focused on a single concern.
+- Branch from `master`. Keep the diff minimal and focused on a single concern.
 - Include a short description of what changed and why.
 - Make sure `npm run check` passes.
 - If your change affects bot behavior, describe how you tested it (even if manually).
