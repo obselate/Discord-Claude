@@ -788,6 +788,32 @@ async function handleCommand(interaction) {
       }
       break;
     }
+
+    case "cost": {
+      const session = getSession(channelId);
+      const inputTokens = typeof session.inputTokens === "number" && !isNaN(session.inputTokens) ? session.inputTokens : 0;
+      const outputTokens = typeof session.outputTokens === "number" && !isNaN(session.outputTokens) ? session.outputTokens : 0;
+
+      if (inputTokens === 0 && outputTokens === 0) {
+        await interaction.reply("📊 No token usage recorded yet for this session.");
+        break;
+      }
+
+      const total = inputTokens + outputTokens;
+      const CONTEXT_MAX = 200_000;
+
+      const inputBar = buildBar(inputTokens, CONTEXT_MAX);
+      const outputBar = buildBar(outputTokens, CONTEXT_MAX);
+      const totalBar = buildBar(total, CONTEXT_MAX);
+
+      await interaction.reply(
+        `📊 **Token Usage**\n` +
+        `Input:  ${inputBar}  ${inputTokens.toLocaleString()} tokens\n` +
+        `Output: ${outputBar}  ${outputTokens.toLocaleString()} tokens\n` +
+        `Total:  ${totalBar}  ${total.toLocaleString()} / ${CONTEXT_MAX.toLocaleString()}`
+      );
+      break;
+    }
   }
 }
 
