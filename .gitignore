@@ -3,4 +3,5 @@ node_modules/
 claude-workdir/
 .superpowers/
 .worktrees/
+.beads/
 docs/
