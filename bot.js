@@ -15,11 +15,17 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  StringSelectMenuBuilder,
   ChannelType,
 } = require("discord.js");
-const { resolve } = require("path");
-const { mkdirSync, writeFileSync } = require("fs");
+const { mkdirSync } = require("fs");
+
+// Lib modules
+const { sessions, botThreads, getSession, WORKING_DIR } = require("./lib/sessions.js");
+const commands = require("./lib/commands.js");
+const { handleCommand } = require("./lib/handlers.js");
+const { loadSDK, sendToClaude, pollContext, mcpState } = require("./lib/sdk.js");
+const { chunkMessage } = require("./lib/formatting.js");
+const { saveAttachments } = require("./lib/attachments.js");
 const { startDashboard, stopDashboard } = require("./dashboard.js");
 
 // ---------------------------------------------------------------------------
@@ -32,66 +38,16 @@ if (!DISCORD_TOKEN) {
   process.exit(1);
 }
 
-const MAX_DISCORD_LEN = 1900;
-const WORKING_DIR = resolve(process.env.CLAUDE_WORKDIR || "./claude-workdir");
-const DEFAULT_MODEL = process.env.CLAUDE_MODEL || ""; // blank = SDK default
-const PERMISSION_MODE = "bypassPermissions"; // headless, no interactive prompts
-const FORUM_CHANNEL_ID = process.env.FORUM_CHANNEL_ID || ""; // Forum channel for /thread posts
-
-const DISCORD_SYSTEM_PROMPT = `You are responding inside a Discord channel. Format all responses using Discord-flavored markdown:
-- Use **bold** for headers and strong emphasis — do NOT use # headings (Discord doesn't render them)
-- Use \`\`\`language fenced code blocks with language tags (e.g. \`\`\`js, \`\`\`bash)
-- Use > blockquote for callouts, warnings, and notes
-- Use - bullet lists when enumerating items rather than prose
-- Avoid HTML tags, wide markdown tables, and bare URLs without context
-- Keep responses concise where possible — long replies will be split across multiple messages`;
+const FORUM_CHANNEL_ID = process.env.FORUM_CHANNEL_ID || "";
 
 mkdirSync(WORKING_DIR, { recursive: true });
 
 // Polls block until a human clicks "Close Poll" — override SDK's 60s timeout
 process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = "2764800000"; // 768 hours in ms
 
-// Agent SDK is ESM-only, so we load it dynamically
-let agentSDK = null;
-let pollServer = null; // In-process MCP server for Discord tools
-
-async function loadSDK() {
-  if (!agentSDK) {
-    agentSDK = await import("@anthropic-ai/claude-agent-sdk");
-  }
-  return agentSDK;
-}
-
-// ---------------------------------------------------------------------------
-// Session tracking
-// ---------------------------------------------------------------------------
-
-/** @type {Map<string, { sessionId: string|null, model: string, messageCount: number, cwd: string, inputTokens: number, outputTokens: number }>} */
-const sessions = new Map();
-
-/** @type {Set<string>} Track thread IDs created by the bot so we respond without @mention */
-const botThreads = new Set();
-
-function getSession(channelId) {
-  if (!sessions.has(channelId)) {
-    sessions.set(channelId, {
-      sessionId: null,
-      model: DEFAULT_MODEL,
-      messageCount: 0,
-      cwd: WORKING_DIR,
-      inputTokens: 0,
-      outputTokens: 0,
-    });
-  }
-  return sessions.get(channelId);
-}
-
 // ---------------------------------------------------------------------------
 // Poll state
 // ---------------------------------------------------------------------------
-
-/** Mutable context so the MCP tool handler can access the current Discord channel */
-const pollContext = { channel: null };
 
 /** @type {Map<string, { resolve: Function, timeout: NodeJS.Timeout, closed: boolean }>} */
 const pendingPolls = new Map();
@@ -99,9 +55,6 @@ const pendingPolls = new Map();
 /**
  * Resolves a pending poll by collecting results and cleaning up.
  * Idempotent — returns false if already closed.
- * @param {string} messageId - The poll message ID
- * @param {import("discord.js").Message} pollMessage - The poll message object
- * @returns {Promise<boolean>} true if resolved, false if already closed
  */
 async function resolvePoll(messageId, pollMessage) {
   const entry = pendingPolls.get(messageId);
@@ -110,14 +63,12 @@ async function resolvePoll(messageId, pollMessage) {
   entry.closed = true;
   clearTimeout(entry.timeout);
 
-  // End the poll (may already be expired)
   try {
     await pollMessage.poll.end();
   } catch {
     // PollAlreadyExpired — that's fine
   }
 
-  // Re-fetch to get finalized vote counts
   let updatedMessage;
   try {
     updatedMessage = await pollMessage.channel.messages.fetch(messageId);
@@ -127,14 +78,12 @@ async function resolvePoll(messageId, pollMessage) {
     return true;
   }
 
-  // Remove the "Close Poll" button
   try {
     await updatedMessage.edit({ components: [] });
   } catch {
     // Non-critical — button removal failed
   }
 
-  // Build result string
   const poll = updatedMessage.poll;
   const answers = poll.answers;
   let totalVotes = 0;
@@ -151,7 +100,6 @@ async function resolvePoll(messageId, pollMessage) {
     return true;
   }
 
-  // Find winner(s)
   const maxVotes = Math.max(...lines.map((l) => l.votes));
 
   let result = `Poll results for "${poll.question.text}":\n`;
@@ -172,752 +120,6 @@ async function resolvePoll(messageId, pollMessage) {
 }
 
 // ---------------------------------------------------------------------------
-// Claude Agent SDK interaction
-// ---------------------------------------------------------------------------
-
-async function sendToClaud(prompt, session, channel) {
-  const { query } = await loadSDK();
-
-  // Set poll context so the MCP tool handler can access the channel
-  pollContext.channel = channel || null;
-
-  const options = {
-    permissionMode: PERMISSION_MODE,
-    systemPrompt: DISCORD_SYSTEM_PROMPT,
-    allowedTools: [
-      "Read",
-      "Write",
-      "Edit",
-      "MultiEdit",
-      "Bash",
-      "Glob",
-      "Grep",
-      "Skill",
-      "Agent",
-    ],
-    cwd: session.cwd,
-    settingSources: ["project", "user"],
-  };
-
-  if (session.model) {
-    options.model = session.model;
-  }
-
-  if (session.sessionId) {
-    options.resume = session.sessionId;
-  }
-
-  if (pollServer) {
-    options.mcpServers = { "discord-polls": pollServer };
-  }
-
-  const chunks = [];
-  const toolNames = new Set();
-
-  console.log(`Sending to Claude | resume: ${session.sessionId || "new"}`);
-
-  try {
-    for await (const message of query({ prompt, options })) {
-      switch (message.type) {
-        case "system":
-          if (message.subtype === "init") {
-            session.sessionId = message.session_id;
-            console.log(`[${session.sessionId}] Session captured`);
-          }
-          // Notify Discord channel about context compaction
-          if (message.subtype === "status" && message.status === "compacting" && channel) {
-            channel.send("🔄 *Compacting context — this may take a moment…*").catch(() => {});
-            console.log(`[${session.sessionId}] Compaction started`);
-          }
-          if (message.subtype === "compact_boundary" && channel) {
-            channel.send("✅ *Context compacted — continuing with refreshed memory.*").catch(() => {});
-            console.log(`[${session.sessionId}] Compaction complete`);
-          }
-          break;
-
-        case "assistant":
-          for (const block of message.message.content) {
-            if (block.type === "text" && block.text) {
-              chunks.push(block.text);
-            }
-            if (block.type === "tool_use") {
-              toolNames.add(block.name);
-            }
-          }
-          break;
-
-        case "result":
-          if (
-            message.subtype === "success" &&
-            message.result &&
-            chunks.length === 0
-          ) {
-            chunks.push(message.result);
-          } else if (message.subtype === "error") {
-            chunks.push(`❌ **Error:** ${message.error || "Unknown error"}`);
-          }
-          // Capture session ID from result too
-          if (message.session_id) {
-            session.sessionId = message.session_id;
-          }
-          // Accumulate token usage for /cost and /status
-          if (message.usage) {
-            session.inputTokens += message.usage.input_tokens || 0;
-            session.outputTokens += message.usage.output_tokens || 0;
-          }
-          break;
-
-        default:
-          break;
-      }
-    }
-  } catch (err) {
-    chunks.push(`❌ **SDK Error:** ${err.message}`);
-  }
-
-  session.messageCount++;
-
-  // Assemble response with tool summary footer
-  let response = chunks.join("\n\n").trim();
-  if (toolNames.size > 0) {
-    const count = toolNames.size;
-    const label = count === 1 ? "tool" : "tools";
-    response += `\n\n> *Used ${count} ${label}: ${[...toolNames].join(", ")}*`;
-  }
-
-  return formatForDiscord(response) || "(empty response)";
-}
-
-// ---------------------------------------------------------------------------
-// Discord markdown formatting
-// ---------------------------------------------------------------------------
-
-/**
- * Post-processes Claude's markdown output for Discord compatibility.
- * Discord supports: bold, italic, code fences, blockquotes, lists, strikethrough.
- * Discord does NOT support: # headings, markdown tables, horizontal rules.
- *
- * @param {string} text
- * @returns {string}
- */
-function formatForDiscord(text) {
-  return text
-    // H2 → underline+bold (one level of visual distinction)
-    .replace(/^## (.+)$/gm, "__**$1**__")
-    // H1 and H3 → bold
-    .replace(/^#{1,3} (.+)$/gm, "**$1**")
-    // Markdown tables → fenced code block
-    // A table starts with a | line followed by a |---| line
-    .replace(/(\|.+\|\n\|[-| :]+\|\n(?:\|.+\|\n?)*)/g, (match) => {
-      return "```\n" + match.trimEnd() + "\n```";
-    })
-    // Horizontal rules → stripped
-    .replace(/^---+$/gm, "")
-    // Clean up any triple+ blank lines left behind
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-// ---------------------------------------------------------------------------
-// Discord message chunking
-// ---------------------------------------------------------------------------
-
-function chunkMessage(text) {
-  if (text.length <= MAX_DISCORD_LEN) return [text];
-
-  const result = [];
-  while (text.length > 0) {
-    if (text.length <= MAX_DISCORD_LEN) {
-      result.push(text);
-      break;
-    }
-
-    let splitAt = text.lastIndexOf("\n", MAX_DISCORD_LEN);
-    if (splitAt === -1 || splitAt < MAX_DISCORD_LEN / 2) {
-      splitAt = text.lastIndexOf(" ", MAX_DISCORD_LEN);
-    }
-    if (splitAt === -1) splitAt = MAX_DISCORD_LEN;
-
-    result.push(text.slice(0, splitAt));
-    text = text.slice(splitAt).replace(/^\n+/, "");
-  }
-
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// Visual helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Renders a 16-character block-character progress bar.
- * @param {number} value - Current value
- * @param {number} max - Maximum value
- * @returns {string} e.g. "████████░░░░░░░░  50%"
- */
-function buildBar(value, max) {
-  const pct = max > 0 ? Math.min(1, value / max) : 0;
-  const filled = Math.round(pct * 16);
-  const empty = 16 - filled;
-  const bar = "█".repeat(filled) + "░".repeat(empty);
-  const label = `${Math.round(pct * 100)}%`;
-  return `${bar}  ${label}`;
-}
-
-/**
- * Returns list of MCP server names via `claude mcp list`, or [] on failure.
- * Note: `claude mcp list` returns server names, not individual tool names.
- * Listing individual tools per server requires deeper SDK introspection
- * not available in the current Agent SDK version.
- * @param {string} cwd - Working directory for the claude command
- * @returns {string[]}
- */
-function getMcpServers(cwd) {
-  // child_process is required inline here to keep it co-located with the
-  // function — execSync is only used by this helper so it isn't hoisted
-  // to the top-level imports.
-  const { execSync } = require("child_process");
-  try {
-    const out = execSync("claude mcp list", { encoding: "utf8", timeout: 5000, cwd }).trim();
-    return out.split("\n").map((l) => l.trim()).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-// ---------------------------------------------------------------------------
-// File attachment handling
-// ---------------------------------------------------------------------------
-
-async function saveAttachments(attachments, targetDir) {
-  const saved = [];
-  for (const [, att] of attachments) {
-    const dest = resolve(targetDir, att.name);
-    const res = await fetch(att.url);
-    const buf = Buffer.from(await res.arrayBuffer());
-    writeFileSync(dest, buf);
-    const isImage = att.contentType && att.contentType.startsWith("image/");
-    saved.push({ path: dest, isImage });
-    console.log(`Saved attachment: ${dest} (${isImage ? "image" : "file"})`);
-  }
-  return saved;
-}
-
-// ---------------------------------------------------------------------------
-// Slash commands definition
-// ---------------------------------------------------------------------------
-
-const commands = [
-  {
-    name: "clear",
-    description: "Kill current Claude session and start fresh",
-  },
-  {
-    name: "session",
-    description: "Show current session info",
-  },
-  {
-    name: "sessions",
-    description: "List all active sessions across channels",
-  },
-  {
-    name: "resume",
-    description: "Resume an existing Claude CLI session",
-  },
-  {
-    name: "model",
-    description: "Switch Claude model for this session",
-    options: [
-      {
-        name: "name",
-        description: "Model name (e.g. sonnet, opus, haiku)",
-        type: 3, // STRING
-        required: true,
-      },
-    ],
-  },
-  {
-    name: "kill_all",
-    description: "Clear all active sessions",
-  },
-  {
-    name: "thread",
-    description: "Create a new thread with a fresh Claude session",
-    options: [
-      {
-        name: "directory",
-        description: "Project directory path (created if it doesn't exist)",
-        type: 3, // STRING
-        required: true,
-        max_length: 260,
-      },
-      {
-        name: "topic",
-        description: "Thread name/topic (defaults to 'Claude Thread – <date>')",
-        type: 3, // STRING
-        required: false,
-        max_length: 100,
-      },
-      {
-        name: "description",
-        description: "Description shown in the forum post starter message",
-        type: 3, // STRING
-        required: false,
-        max_length: 1000,
-      },
-    ],
-  },
-  {
-    name: "compact",
-    description: "Compact the conversation context to free up context window",
-    options: [
-      {
-        name: "instructions",
-        description: "Optional guidance for the summary (e.g. 'focus on auth module')",
-        type: 3, // STRING
-        required: false,
-        max_length: 500,
-      },
-    ],
-  },
-  {
-    name: "memory",
-    description: "List CLAUDE.md memory files in the working directory",
-  },
-  {
-    name: "cost",
-    description: "Show token usage and context window usage for this session",
-  },
-  {
-    name: "doctor",
-    description: "Run a health check on the bot environment",
-  },
-  {
-    name: "status",
-    description: "Show full session state summary",
-  },
-  {
-    name: "mcp",
-    description: "List connected MCP servers",
-  },
-  {
-    name: "tools",
-    description: "List available tools in this session",
-  },
-];
-
-// ---------------------------------------------------------------------------
-// Slash command handlers
-// ---------------------------------------------------------------------------
-
-async function handleCommand(interaction) {
-  const { commandName, channelId } = interaction;
-
-  switch (commandName) {
-    case "clear": {
-      sessions.delete(channelId);
-      await interaction.reply("Session cleared. Next message starts fresh.");
-      break;
-    }
-
-    case "session": {
-      const session = sessions.get(channelId);
-      if (session) {
-        await interaction.reply(
-          `**Session ID:** \`${session.sessionId || "None (new session)"}\`\n` +
-            `**Model:** \`${session.model || "(SDK default)"}\`\n` +
-            `**Messages:** ${session.messageCount}`
-        );
-      } else {
-        await interaction.reply(
-          "No active session. Send a message to start one."
-        );
-      }
-      break;
-    }
-
-    case "sessions": {
-      if (sessions.size === 0) {
-        await interaction.reply("No active sessions.");
-        break;
-      }
-
-      const lines = [];
-      for (const [cid, s] of sessions) {
-        const channel = interaction.client.channels.cache.get(cid);
-        const name = channel?.name || cid;
-        lines.push(
-          `• **#${name}** — ${s.messageCount} msgs, session: \`${
-            s.sessionId || "pending"
-          }\``
-        );
-      }
-      await interaction.reply(lines.join("\n"));
-      break;
-    }
-
-    case "resume": {
-      await interaction.deferReply();
-
-      try {
-        const { listSessions } = await loadSDK();
-        const sessionList = await listSessions({ dir: WORKING_DIR, limit: 25 });
-
-        if (!sessionList || sessionList.length === 0) {
-          await interaction.editReply("No existing sessions found.");
-          break;
-        }
-
-        const options = sessionList.slice(0, 25).map((s) => {
-          const sid = s.sessionId || s.id || "unknown";
-          const label = (s.name || s.lastMessage || sid).slice(0, 100);
-          return {
-            label,
-            value: sid,
-            description: sid.slice(0, 100),
-          };
-        });
-
-        const select = new StringSelectMenuBuilder()
-          .setCustomId("resume_session")
-          .setPlaceholder("Pick a session to resume...")
-          .addOptions(options);
-
-        const row = new ActionRowBuilder().addComponents(select);
-
-        const reply = await interaction.editReply({
-          content: "Select a session to resume:",
-          components: [row],
-        });
-
-        // Wait for selection
-        try {
-          const selectInteraction = await reply.awaitMessageComponent({
-            time: 60_000,
-          });
-
-          const chosenId = selectInteraction.values[0];
-          const session = getSession(channelId);
-          session.sessionId = chosenId;
-          session.messageCount = 0;
-
-          await selectInteraction.update({
-            content: `Resumed session \`${chosenId}\`. Next message continues that conversation.`,
-            components: [],
-          });
-        } catch {
-          await interaction.editReply({
-            content: "Selection timed out.",
-            components: [],
-          });
-        }
-      } catch (err) {
-        await interaction.editReply(
-          `Failed to list sessions: \`${err.message}\``
-        );
-      }
-      break;
-    }
-
-    case "model": {
-      const name = interaction.options.getString("name");
-      const session = getSession(channelId);
-      session.model = name.trim();
-      await interaction.reply(
-        `Model set to **${session.model || "(SDK default)"}** for this session.`
-      );
-      break;
-    }
-
-    case "kill_all": {
-      const count = sessions.size;
-      sessions.clear();
-      await interaction.reply(`Cleared ${count} session(s).`);
-      break;
-    }
-
-    case "thread": {
-      const directory = interaction.options.getString("directory");
-      const topic = interaction.options.getString("topic");
-      const description = interaction.options.getString("description");
-      const now = new Date();
-      const dateStr = now.toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-      });
-      const threadName = topic || `Claude Thread – ${dateStr}`;
-
-      // Resolve directory: absolute paths used directly, relative resolved against WORKING_DIR
-      const resolvedPath = resolve(WORKING_DIR, directory);
-
-      // Ensure the directory exists (no-op if it already does)
-      try {
-        mkdirSync(resolvedPath, { recursive: true });
-      } catch (dirErr) {
-        await interaction.reply({
-          content: `❌ Failed to create directory \`${resolvedPath}\`: ${dirErr.message}`,
-          ephemeral: true,
-        });
-        break;
-      }
-
-      try {
-        // Use the configured forum channel, or fall back to current channel
-        let targetChannel;
-        if (FORUM_CHANNEL_ID) {
-          targetChannel =
-            interaction.client.channels.cache.get(FORUM_CHANNEL_ID) ||
-            (await interaction.client.channels.fetch(FORUM_CHANNEL_ID));
-        } else {
-          targetChannel = interaction.channel;
-        }
-
-        // Build the starter message
-        let starterMessage = `📁 **Project:** \`${resolvedPath}\``;
-        if (description) {
-          starterMessage += `\n📝 ${description}`;
-        }
-        starterMessage += `\n\nSend a message to start chatting with Claude!`;
-
-        let thread;
-        console.log(`[/thread] Target channel: ${targetChannel.id}, type: ${targetChannel.type}, expected GuildForum: ${ChannelType.GuildForum}`);
-        const isForum = targetChannel.type === ChannelType.GuildForum;
-
-        if (isForum) {
-          // Create a forum post (requires a starter message)
-          thread = await targetChannel.threads.create({
-            name: threadName,
-            message: { content: starterMessage },
-            reason: `Claude forum post created by ${interaction.user.tag}`,
-          });
-        } else {
-          // Fall back to regular thread in current channel
-          if (interaction.channel.isThread()) {
-            await interaction.reply({
-              content:
-                "❌ Cannot create a thread inside a thread. Set FORUM_CHANNEL_ID to use a forum channel.",
-              ephemeral: true,
-            });
-            break;
-          }
-          thread = await targetChannel.threads.create({
-            name: threadName,
-            type: ChannelType.PublicThread,
-            reason: `Claude thread created by ${interaction.user.tag}`,
-          });
-          await thread.send(starterMessage);
-        }
-
-        // Track this thread so MessageCreate responds without @mention
-        botThreads.add(thread.id);
-
-        // Initialize a fresh session for the thread with the project directory
-        const session = getSession(thread.id);
-        session.cwd = resolvedPath;
-
-        // Confirm to the user (ephemeral so it doesn't clutter the channel)
-        await interaction.reply({
-          content: `Created ${isForum ? "forum post" : "thread"} **${threadName}** → \`${resolvedPath}\`. Head over to ${thread} to start chatting!`,
-          ephemeral: true,
-        });
-      } catch (err) {
-        console.error("Thread creation error:", err);
-        await interaction.reply({
-          content: `❌ Failed to create thread: ${err.message}`,
-          ephemeral: true,
-        });
-      }
-      break;
-    }
-
-    case "compact": {
-      const session = getSession(channelId);
-      session.sessionId = null;
-      await interaction.reply(
-        "🗜️ Session compacted. Claude will start fresh on your next message, retaining your model and working directory settings."
-      );
-      break;
-    }
-
-    case "memory": {
-      const { existsSync, readFileSync } = require("fs");
-      const path = require("path");
-      const session = getSession(channelId);
-
-      // Walk from session.cwd up to (and including) WORKING_DIR, collecting CLAUDE.md files
-      const found = [];
-      let dir = path.resolve(session.cwd);
-      const root = path.resolve(WORKING_DIR);
-
-      // Normalise to forward slashes for consistent comparison on Windows
-      const normalise = (p) => p.replace(/\\/g, "/");
-
-      while (true) {
-        const candidate = path.join(dir, "CLAUDE.md");
-        if (existsSync(candidate)) {
-          found.push(candidate);
-        }
-
-        // Stop after processing WORKING_DIR — don't ascend above it
-        if (normalise(dir) === normalise(root)) break;
-
-        const parent = path.dirname(dir);
-        // Guard against hitting the filesystem root before WORKING_DIR
-        if (parent === dir) break;
-        dir = parent;
-      }
-
-      if (found.length === 0) {
-        await interaction.reply(
-          "📝 No CLAUDE.md memory files found in your working directory tree."
-        );
-        break;
-      }
-
-      // Build response string
-      let output = "📝 **Memory files found:**\n";
-      for (const filePath of found) {
-        const contents = readFileSync(filePath, "utf8");
-        output += `\n**\`${filePath}\`**\n\`\`\`\n${contents}\n\`\`\`\n`;
-      }
-
-      const chunks = chunkMessage(output.trim());
-      await interaction.reply(chunks[0]);
-      for (let i = 1; i < chunks.length; i++) {
-        await interaction.followUp(chunks[i]);
-      }
-      break;
-    }
-
-    case "cost": {
-      const session = getSession(channelId);
-      const inputTokens = typeof session.inputTokens === "number" && !isNaN(session.inputTokens) ? session.inputTokens : 0;
-      const outputTokens = typeof session.outputTokens === "number" && !isNaN(session.outputTokens) ? session.outputTokens : 0;
-
-      if (inputTokens === 0 && outputTokens === 0) {
-        await interaction.reply("📊 No token usage recorded yet for this session.");
-        break;
-      }
-
-      const total = inputTokens + outputTokens;
-      const CONTEXT_MAX = 200_000;
-
-      const inputBar = buildBar(inputTokens, CONTEXT_MAX);
-      const outputBar = buildBar(outputTokens, CONTEXT_MAX);
-      const totalBar = buildBar(total, CONTEXT_MAX);
-
-      await interaction.reply(
-        `📊 **Token Usage**\n` +
-        `Input:  ${inputBar}  ${inputTokens.toLocaleString()} tokens\n` +
-        `Output: ${outputBar}  ${outputTokens.toLocaleString()} tokens\n` +
-        `Total:  ${totalBar}  ${total.toLocaleString()} / ${CONTEXT_MAX.toLocaleString()}`
-      );
-      break;
-    }
-
-    case "doctor": {
-      const health = require("./scripts/health.js");
-
-      const nodeResult   = health.checkNodeVersion();
-      const tokenResult  = health.checkDiscordToken();
-      const cliResult    = health.checkClaudeCLI();
-      const dirResult    = health.checkWorkingDir(WORKING_DIR);
-      const forumResult  = health.checkForumChannelId();
-
-      const fmt = (result, optional = false) => {
-        if (result.ok) return `✅ ${result.message}`;
-        return optional ? `⚠️ ${result.message}` : `❌ ${result.message}`;
-      };
-
-      const output = [
-        "🩺 **Bot Health Check**",
-        fmt(nodeResult),
-        fmt(tokenResult),
-        fmt(cliResult),
-        fmt(dirResult),
-        fmt(forumResult, true),
-      ].join("\n");
-
-      await interaction.reply(output);
-      break;
-    }
-
-    case "status": {
-      await interaction.deferReply();
-
-      const session = sessions.get(channelId);
-
-      if (!session || session.sessionId === null) {
-        await interaction.editReply(
-          "📡 **Bot Status**\nNo active session. Send a message to start one."
-        );
-        break;
-      }
-
-      const mcpList = getMcpServers(session.cwd);
-      const mcpDisplay = mcpList.length > 0 ? mcpList.join(", ") : "none";
-
-      const total = (session.inputTokens || 0) + (session.outputTokens || 0);
-      const CONTEXT_MAX = 200_000;
-      const bar = buildBar(total, CONTEXT_MAX);
-
-      const shortId = session.sessionId ? session.sessionId.slice(0, 8) : "none";
-      const modelDisplay = session.model || "(SDK default)";
-
-      const output =
-        `📡 **Bot Status**\n\n` +
-        `**Model:** ${modelDisplay}\n` +
-        `**Session:** active (ID: ${shortId}...) | Messages: ${session.messageCount}\n` +
-        `**Working Dir:** ${session.cwd}\n\n` +
-        `**Context:**\n` +
-        `${bar}  ${total.toLocaleString()} / ${CONTEXT_MAX.toLocaleString()} tokens\n\n` +
-        `**MCP Servers:** ${mcpDisplay}`;
-
-      await interaction.editReply(output);
-      break;
-    }
-
-    case "mcp": {
-      await interaction.deferReply();
-      const session = getSession(channelId);
-      const servers = getMcpServers(session.cwd);
-
-      let output = "🔌 **MCP Servers**\n";
-      if (servers.length === 0) {
-        output += "No MCP servers configured. Run `claude mcp add` to configure one.";
-      } else {
-        output += servers.map((s) => `• ${s}`).join("\n");
-      }
-
-      await interaction.editReply(output);
-      break;
-    }
-
-    case "tools": {
-      await interaction.deferReply();
-      const session = getSession(channelId);
-      const mcpServers = getMcpServers(session.cwd);
-
-      let output =
-        "🛠️ **Available Tools**\n\n" +
-        "**Built-in:**\n" +
-        "• Read, Write, Edit, Bash, Glob, Grep\n" +
-        "• WebSearch, WebFetch\n" +
-        "• TodoWrite, NotebookEdit\n\n";
-
-      if (mcpServers.length === 0) {
-        output += "**MCP Servers:** none configured";
-      } else {
-        output += "**MCP Servers:**\n" + mcpServers.map((s) => `• ${s}`).join("\n");
-      }
-
-      await interaction.editReply(output);
-      break;
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Bot setup
 // ---------------------------------------------------------------------------
 
@@ -932,7 +134,7 @@ const client = new Client({
 });
 
 // ---------------------------------------------------------------------------
-// Register slash commands on ready
+// Ready — load SDK, register MCP tools, register slash commands
 // ---------------------------------------------------------------------------
 
 client.once(Events.ClientReady, async (c) => {
@@ -944,7 +146,8 @@ client.once(Events.ClientReady, async (c) => {
 
   // Create in-process MCP server for Discord tools
   const { z } = await import("zod");
-  const { createSdkMcpServer, tool } = agentSDK;
+  const sdk = await loadSDK();
+  const { createSdkMcpServer, tool } = sdk;
 
   const createPollTool = tool(
     "CreatePoll",
@@ -961,10 +164,9 @@ client.once(Events.ClientReady, async (c) => {
       }
 
       try {
-        // Post the poll with a "Close Poll" button
         const row = new ActionRowBuilder().addComponents(
           new ButtonBuilder()
-            .setCustomId("close_poll_pending") // Updated after message is sent
+            .setCustomId("close_poll_pending")
             .setLabel("Close Poll")
             .setStyle(ButtonStyle.Secondary)
         );
@@ -979,7 +181,6 @@ client.once(Events.ClientReady, async (c) => {
           components: [row],
         });
 
-        // Update button custom ID to include the real message ID
         const updatedRow = new ActionRowBuilder().addComponents(
           new ButtonBuilder()
             .setCustomId(`close_poll_${pollMessage.id}`)
@@ -990,10 +191,8 @@ client.once(Events.ClientReady, async (c) => {
 
         console.log(`[Poll] Created poll "${args.question}" in ${channel.id}, message ${pollMessage.id}`);
 
-        // Block until poll is closed
         const resultText = await new Promise((resolve) => {
           const timeout = setTimeout(async () => {
-            // Timeout fallback — re-fetch message and resolve
             try {
               const msg = await channel.messages.fetch(pollMessage.id);
               await resolvePoll(pollMessage.id, msg);
@@ -1017,12 +216,12 @@ client.once(Events.ClientReady, async (c) => {
     }
   );
 
-  pollServer = createSdkMcpServer({
-    name: "discord-polls",
-    tools: [createPollTool],
-  });
-  console.log("Discord polls MCP server created.");
+  // Wire MCP state so sdk.js can attach it to queries
+  mcpState.tool = createPollTool;
+  mcpState.createServer = createSdkMcpServer;
+  console.log("Discord polls MCP tool registered.");
 
+  // Register slash commands
   const rest = new REST().setToken(DISCORD_TOKEN);
   try {
     await rest.put(Routes.applicationCommands(c.user.id), { body: commands });
@@ -1031,14 +230,12 @@ client.once(Events.ClientReady, async (c) => {
     console.error("Failed to register slash commands:", err);
   }
 
-  // Start beads dashboard polling
-  startDashboard(c).catch((err) =>
-    console.error("[Dashboard] Startup failed:", err)
-  );
+  // Start beads dashboard polling (per-thread, no initial fetch needed)
+  startDashboard(c);
 });
 
 // ---------------------------------------------------------------------------
-// Handle slash commands
+// Handle interactions (slash commands + button clicks)
 // ---------------------------------------------------------------------------
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -1048,7 +245,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const entry = pendingPolls.get(messageId);
 
     if (!entry || entry.closed) {
-      await interaction.reply({ content: "Poll already closed.", ephemeral: true });
+      await interaction.reply({ content: "Poll already closed.", ephemeral: true }).catch(() => {});
       return;
     }
 
@@ -1074,10 +271,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await handleCommand(interaction);
   } catch (err) {
     console.error("Command error:", err);
-    const reply = interaction.deferred
-      ? interaction.editReply
-      : interaction.reply;
-    await reply.call(interaction, `Error: ${err.message}`);
+    try {
+      const reply = interaction.deferred
+        ? interaction.editReply
+        : interaction.reply;
+      await reply.call(interaction, `Error: ${err.message}`);
+    } catch (replyErr) {
+      console.error("Failed to send error reply:", replyErr.message);
+    }
   }
 });
 
@@ -1086,14 +287,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 // ---------------------------------------------------------------------------
 
 client.on(Events.MessageCreate, async (message) => {
-  // Ignore bots
   if (message.author.bot) return;
 
-  // Respond to @mentions, DMs, or replies to the bot's messages
   const isDM = !message.guild;
   const isMentioned = message.mentions.has(client.user);
   const isBotThread = botThreads.has(message.channelId);
-  // Auto-detect forum threads by channel type — survives bot restarts unlike the in-memory Set
   const isForumThread =
     message.channel.isThread() &&
     message.channel.parent?.type === ChannelType.GuildForum &&
@@ -1108,7 +306,6 @@ client.on(Events.MessageCreate, async (message) => {
 
   if (!isDM && !isMentioned && !isBotThread && !isForumThread && !isReplyToBot) return;
 
-  // Strip bot mention from prompt
   let prompt = message.content
     .replace(new RegExp(`<@!?${client.user.id}>`, "g"), "")
     .trim();
@@ -1137,7 +334,7 @@ client.on(Events.MessageCreate, async (message) => {
   }, 8_000);
 
   try {
-    const response = await sendToClaud(prompt, session, message.channel);
+    const response = await sendToClaude(prompt, session, message.channel);
 
     clearInterval(typingInterval);
 
@@ -1161,7 +358,6 @@ client.on(Events.MessageCreate, async (message) => {
 // Graceful shutdown
 // ---------------------------------------------------------------------------
 
-// Graceful shutdown — clean up dashboard interval (useful for --watch restarts)
 process.on("SIGINT", () => {
   stopDashboard();
   client.destroy();
@@ -1169,11 +365,7 @@ process.on("SIGINT", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Run
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Error handling — prevent unhandled 'error' events from crashing the process
+// Error handling
 // ---------------------------------------------------------------------------
 
 client.on(Events.Error, (err) => {
@@ -1183,5 +375,9 @@ client.on(Events.Error, (err) => {
 process.on("unhandledRejection", (err) => {
   console.error("[Process] Unhandled rejection:", err);
 });
+
+// ---------------------------------------------------------------------------
+// Run
+// ---------------------------------------------------------------------------
 
 client.login(DISCORD_TOKEN);

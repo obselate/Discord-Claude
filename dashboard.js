@@ -1,10 +1,12 @@
 /**
- * Beads dashboard — maintains an auto-updating Discord message
- * showing open beads grouped by status and sorted by priority.
+ * Per-thread beads dashboard — each forum thread with a .beads/ project
+ * gets a pinned message showing open beads grouped by status and priority.
+ * A single ticker updates all tracked threads on an interval.
  */
 
 const { exec } = require("child_process");
 const { promisify } = require("util");
+const { existsSync } = require("fs");
 const { resolve } = require("path");
 
 const execAsync = promisify(exec);
@@ -13,35 +15,54 @@ const execAsync = promisify(exec);
 // Config
 // ---------------------------------------------------------------------------
 
-const BEADS_CHANNEL_ID = process.env.BEADS_CHANNEL_ID || "";
 const POLL_INTERVAL_MS = 30_000;
 const MAX_MSG_LEN = 1900;
-
-// Project root where .beads/ lives (parent of claude-workdir)
-const PROJECT_ROOT = resolve(process.env.CLAUDE_WORKDIR || "./claude-workdir", "..");
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
-let dashboardMessageId = null;
-let cachedBody = "";
+/**
+ * Map<threadId, { cwd: string, messageId: string, cachedBody: string }>
+ * Each entry tracks a thread's dashboard message and the project root to poll.
+ */
+const threadDashboards = new Map();
+
 let intervalHandle = null;
-let dashboardChannel = null;
-let botUserId = null;
+let discordClient = null;
+
+// ---------------------------------------------------------------------------
+// Beads directory resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Walk up from cwd looking for a .beads/ directory.
+ * @param {string} cwd
+ * @returns {string|null} the directory containing .beads/, or null
+ */
+function findBeadsRoot(cwd) {
+  let dir = resolve(cwd);
+  const root = resolve("/");
+  while (true) {
+    if (existsSync(resolve(dir, ".beads"))) return dir;
+    const parent = resolve(dir, "..");
+    if (parent === dir || dir === root) return null;
+    dir = parent;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Data fetching
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch beads from bd CLI, grouped by status.
+ * Fetch beads from bd CLI for a specific project root, grouped by status.
+ * @param {string} projectRoot
  * @returns {Promise<{ inProgress: Array, open: Array, blocked: Array } | null>}
- *   null if bd commands fail
  */
-async function fetchBeads() {
+async function fetchBeads(projectRoot) {
   try {
-    const opts = { cwd: PROJECT_ROOT };
+    const opts = { cwd: projectRoot };
 
     const [listResult, blockedResult] = await Promise.all([
       execAsync("bd list --json --sort=priority", opts),
@@ -51,13 +72,11 @@ async function fetchBeads() {
     const allBeads = JSON.parse(listResult.stdout || "[]");
     const blockedBeads = JSON.parse(blockedResult.stdout || "[]");
 
-    // Build a Map of blocked bead IDs -> blocker info for quick lookup
     const blockedMap = new Map();
     for (const b of blockedBeads) {
       blockedMap.set(b.id, b.blocked_by || []);
     }
 
-    // Group: blocked beads go to blocked section regardless of their status field
     const groups = { inProgress: [], open: [], blocked: [] };
 
     for (const bead of allBeads) {
@@ -72,7 +91,7 @@ async function fetchBeads() {
 
     return groups;
   } catch (err) {
-    console.error("[Dashboard] bd command failed:", err.message);
+    console.error(`[Dashboard] bd command failed for ${projectRoot}:`, err.message);
     return null;
   }
 }
@@ -81,10 +100,6 @@ async function fetchBeads() {
 // Message formatting
 // ---------------------------------------------------------------------------
 
-/**
- * Format the dashboard header with timestamp.
- * @returns {string}
- */
 function formatHeader() {
   const now = new Date();
   const timestamp = now.toLocaleString("en-US", {
@@ -98,7 +113,6 @@ function formatHeader() {
   return `📋 **Beads Dashboard**\nLast updated: ${timestamp}\n\n`;
 }
 
-// Header length is stable (varies by ~1 char for hour digit). Use a safe estimate.
 const HEADER_RESERVE = 60;
 
 /**
@@ -137,22 +151,12 @@ function formatBody(groups) {
   return lines.join("\n").trimEnd();
 }
 
-/**
- * Format a list of beads as bullet lines, sorted by priority.
- * @param {Array} beads
- * @returns {string[]}
- */
 function formatSection(beads) {
   return beads
     .sort((a, b) => (a.priority ?? 4) - (b.priority ?? 4))
     .map((b) => `• [P${b.priority ?? "?"}] ${b.id} — ${b.title}`);
 }
 
-/**
- * Format blocked beads with blocker info.
- * @param {Array} beads
- * @returns {string[]}
- */
 function formatBlockedSection(beads) {
   return beads
     .sort((a, b) => (a.priority ?? 4) - (b.priority ?? 4))
@@ -166,14 +170,6 @@ function formatBlockedSection(beads) {
     });
 }
 
-/**
- * Truncate section lines if adding them would exceed the max body length.
- * Returns the lines that fit, plus an "...and N more" line if truncated.
- * @param {string[]} sectionLines - formatted bead lines for this section
- * @param {number} maxBody - max total body length
- * @param {string[]} existingLines - lines already accumulated
- * @returns {string[]}
- */
 function truncateSection(sectionLines, maxBody, existingLines) {
   const currentLen = existingLines.join("\n").length;
   const result = [];
@@ -192,104 +188,119 @@ function truncateSection(sectionLines, maxBody, existingLines) {
 }
 
 // ---------------------------------------------------------------------------
-// Message persistence
+// Per-thread dashboard management
 // ---------------------------------------------------------------------------
 
 /**
- * Search the dashboard channel for the bot's most recent message to reuse.
- * @returns {Promise<string|null>} message ID or null
+ * Register a thread for dashboard tracking. Sends and pins the initial message.
+ * Called from bot.js after /thread creates a forum post.
+ * @param {import("discord.js").ThreadChannel} thread
+ * @param {string} cwd - the session's working directory
+ * @returns {Promise<boolean>} true if dashboard was created
  */
-async function findExistingMessage() {
+async function registerThread(thread, cwd) {
+  const beadsRoot = findBeadsRoot(cwd);
+  if (!beadsRoot) return false;
+
   try {
-    const messages = await dashboardChannel.messages.fetch({ limit: 20 });
-    const botMsg = messages.find((m) => m.author.id === botUserId);
-    return botMsg ? botMsg.id : null;
+    // Fetch initial data for the first render
+    const groups = await fetchBeads(beadsRoot);
+    const body = groups ? formatBody(groups) : "Loading beads...";
+    const content = formatHeader() + body;
+
+    const msg = await thread.send(content);
+    await msg.pin().catch(() => {
+      console.warn(`[Dashboard] Could not pin message in ${thread.id}`);
+    });
+
+    threadDashboards.set(thread.id, {
+      cwd: beadsRoot,
+      messageId: msg.id,
+      cachedBody: body,
+    });
+
+    console.log(`[Dashboard] Registered thread ${thread.id} → ${beadsRoot}`);
+    return true;
   } catch (err) {
-    console.error("[Dashboard] Failed to search for existing message:", err.message);
-    return null;
+    console.error(`[Dashboard] Failed to register thread ${thread.id}:`, err.message);
+    return false;
   }
 }
 
 /**
- * Send or edit the dashboard message.
- * @param {string} content
+ * Unregister a thread from dashboard tracking.
+ * @param {string} threadId
  */
-async function updateMessage(content) {
-  // Try to edit existing message
-  if (dashboardMessageId) {
-    try {
-      const msg = await dashboardChannel.messages.fetch(dashboardMessageId);
-      await msg.edit(content);
-      return;
-    } catch {
-      console.warn("[Dashboard] Failed to edit message, sending new one.");
-      dashboardMessageId = null;
-    }
-  }
-
-  // Send a new message
-  try {
-    const msg = await dashboardChannel.send(content);
-    dashboardMessageId = msg.id;
-  } catch (err) {
-    console.error("[Dashboard] Failed to send message:", err.message);
+function unregisterThread(threadId) {
+  if (threadDashboards.delete(threadId)) {
+    console.log(`[Dashboard] Unregistered thread ${threadId}`);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Exports
+// Tick loop
 // ---------------------------------------------------------------------------
 
-/** Single poll tick: fetch, format, diff, update. */
+/** Single poll tick: update all tracked thread dashboards. */
 async function tick() {
-  const groups = await fetchBeads();
-  if (!groups) return; // bd failed, skip this tick
+  if (threadDashboards.size === 0) return;
 
-  // Build body without timestamp for diffing
-  const body = formatBody(groups);
+  const updates = [];
 
-  // Lazy: skip if bead data hasn't changed
-  if (body === cachedBody) return;
+  for (const [threadId, entry] of threadDashboards) {
+    updates.push(
+      (async () => {
+        try {
+          // Check if thread is still accessible / not archived
+          const thread =
+            discordClient.channels.cache.get(threadId) ||
+            (await discordClient.channels.fetch(threadId).catch(() => null));
 
-  cachedBody = body;
+          if (!thread || thread.archived) {
+            unregisterThread(threadId);
+            return;
+          }
 
-  // Build full message with fresh timestamp
-  const content = formatHeader() + body;
-  await updateMessage(content);
+          const groups = await fetchBeads(entry.cwd);
+          if (!groups) return;
+
+          const body = formatBody(groups);
+          if (body === entry.cachedBody) return;
+
+          entry.cachedBody = body;
+          const content = formatHeader() + body;
+
+          const msg = await thread.messages.fetch(entry.messageId).catch(() => null);
+          if (msg) {
+            await msg.edit(content);
+          } else {
+            // Message was deleted — send a new one and pin it
+            const newMsg = await thread.send(content);
+            await newMsg.pin().catch(() => {});
+            entry.messageId = newMsg.id;
+          }
+        } catch (err) {
+          console.error(`[Dashboard] Tick failed for thread ${threadId}:`, err.message);
+        }
+      })()
+    );
+  }
+
+  await Promise.allSettled(updates);
 }
 
+// ---------------------------------------------------------------------------
+// Lifecycle
+// ---------------------------------------------------------------------------
+
 /**
- * Start the beads dashboard polling loop.
+ * Start the dashboard polling loop.
  * @param {import("discord.js").Client} client
  */
-async function startDashboard(client) {
-  if (!BEADS_CHANNEL_ID) {
-    console.log("[Dashboard] BEADS_CHANNEL_ID not set, dashboard disabled.");
-    return;
-  }
-
-  botUserId = client.user.id;
-
-  // Fetch the target channel
-  try {
-    dashboardChannel =
-      client.channels.cache.get(BEADS_CHANNEL_ID) ||
-      (await client.channels.fetch(BEADS_CHANNEL_ID));
-  } catch (err) {
-    console.warn("[Dashboard] Could not fetch channel:", err.message);
-    return;
-  }
-
-  // Look for an existing dashboard message to reuse
-  dashboardMessageId = await findExistingMessage();
-  if (dashboardMessageId) {
-    console.log(`[Dashboard] Reusing existing message: ${dashboardMessageId}`);
-  }
-
-  // Run immediately, then on interval
-  await tick();
+function startDashboard(client) {
+  discordClient = client;
   intervalHandle = setInterval(tick, POLL_INTERVAL_MS);
-  console.log(`[Dashboard] Polling every ${POLL_INTERVAL_MS / 1000}s in #${dashboardChannel.name || BEADS_CHANNEL_ID}`);
+  console.log(`[Dashboard] Polling every ${POLL_INTERVAL_MS / 1000}s for per-thread dashboards`);
 }
 
 /** Stop the polling loop. */
@@ -301,4 +312,4 @@ function stopDashboard() {
   }
 }
 
-module.exports = { startDashboard, stopDashboard };
+module.exports = { startDashboard, stopDashboard, registerThread, unregisterThread };
