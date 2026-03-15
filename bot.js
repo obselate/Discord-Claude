@@ -729,6 +729,15 @@ async function handleCommand(interaction) {
       }
       break;
     }
+
+    case "compact": {
+      const session = getSession(channelId);
+      session.sessionId = null;
+      await interaction.reply(
+        "🗜️ Session compacted. Claude will start fresh on your next message, retaining your model and working directory settings."
+      );
+      break;
+    }
   }
 }
 
